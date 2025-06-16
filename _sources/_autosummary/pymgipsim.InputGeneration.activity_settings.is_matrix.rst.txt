@@ -1,0 +1,6 @@
+pymgipsim.InputGeneration.activity\_settings.is\_matrix
+=======================================================
+
+.. currentmodule:: pymgipsim.InputGeneration.activity_settings
+
+.. autofunction:: is_matrix

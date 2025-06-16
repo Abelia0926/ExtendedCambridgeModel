@@ -1,0 +1,37 @@
+pymgipsim.Settings.DefaultSettings
+==================================
+
+==================================
+
+.. automodule:: pymgipsim.Settings.DefaultSettings
+
+   
+   
+   
+
+   
+   
+   
+
+   
+   
+   
+
+   
+   
+   
+
+
+
+.. autosummary::
+   :toctree:
+   :template: custom-module-template.rst
+   :recursive:
+
+   
+      pymgipsim.Settings.DefaultSettings.generate_scenarios
+   
+      pymgipsim.Settings.DefaultSettings.generate_scenarios_14days
+   
+      pymgipsim.Settings.DefaultSettings.generate_scenarios_14days_continuous
+

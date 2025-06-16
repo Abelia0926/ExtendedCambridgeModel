@@ -1,0 +1,6 @@
+pymgipsim.Settings.DefaultSettings.generate\_scenarios\_14days.generate\_day\_scenario
+======================================================================================
+
+.. currentmodule:: pymgipsim.Settings.DefaultSettings.generate_scenarios_14days
+
+.. autofunction:: generate_day_scenario

@@ -1,0 +1,33 @@
+pymgipsim.Settings.DefaultSettings.generate\_scenarios\_14days
+==============================================================
+
+============================================================
+
+.. automodule:: pymgipsim.Settings.DefaultSettings.generate_scenarios_14days
+
+   
+   
+   
+
+   
+   
+   .. rubric:: Functions
+
+   .. autosummary::
+      :toctree:
+      :nosignatures:
+   
+      generate_day_scenario
+   
+   
+
+   
+   
+   
+
+   
+   
+   
+
+
+
