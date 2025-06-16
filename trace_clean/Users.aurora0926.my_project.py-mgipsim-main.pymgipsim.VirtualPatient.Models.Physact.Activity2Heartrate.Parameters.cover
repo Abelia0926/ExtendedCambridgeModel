@@ -1,0 +1,49 @@
+    1: import numpy as np
+    1: import json
+    1: import os
+    1: from ...Parameters import BaseParameters
+    1: from pymgipsim.Utilities.Scenario import scenario
+    1: from pymgipsim.Utilities.paths import models_path
+    2: class Parameters(BaseParameters):
+       
+    1:     def __init__(self, parameters: np.ndarray = np.array([], dtype=float)):
+    3:         if parameters.size:
+    1:             (self.beta, self.VT_HRR, self.a, self.HRmax, self.HRrest, self.MaxSpeed,
+    1:              self.MaxGrade, self.BW, self.MAP, self.vGmax, self.aL, self.aM,
+    1:              self.p0, self.r0, self.G0, self.M0, self.taoM, self.vMmax, self.GT,
+    2:              self.taoL, self.aG) = parameters.T
+               else:
+    2:             pass
+       
+    2:     @property
+    2:     def as_array(self):
+   10:         parameters = [self.beta, self.VT_HRR, self.a, self.HRmax, self.HRrest, self.MaxSpeed,
+    5:              self.MaxGrade, self.BW, self.MAP, self.vGmax, self.aL, self.aM,
+    5:              self.p0, self.r0, self.G0, self.M0, self.taoM, self.vMmax, self.GT,
+    5:              self.taoL, self.aG]
+    5:         self._as_array = np.asarray(parameters).T
+    5:         return self._as_array
+       
+    2:     @as_array.setter
+    2:     def as_array(self, array: np.ndarray):
+               (self.beta, self.VT_HRR, self.a, self.HRmax, self.HRrest, self.MaxSpeed,
+                    self.MaxGrade, self.BW, self.MAP, self.vGmax, self.aL, self.aM,
+                    self.p0, self.r0, self.G0, self.M0, self.taoM, self.vMmax, self.GT,
+                    self.taoL, self.aG) = array.T
+               self._as_array = np.asarray(array)
+       
+       
+    2:     @staticmethod
+    2:     def generate(scenario_instance: scenario):
+    1:         cohort_parameters = []
+    1:         path = os.path.join(models_path, "Physact", "Activity2Heartrate", "Patients")
+    2:         for name in scenario_instance.patient.files:
+    1:             abs_path = os.path.join(path, name)
+    2:             with open(abs_path) as f:
+    1:                 params_dict = json.load(f)
+    1:             model_params = params_dict["model_parameters"]
+    1:             parameters = Parameters()
+    1:             parameters.fromJSON(model_params)
+    1:             cohort_parameters.append(parameters.as_array)
+    1:         return np.concatenate(cohort_parameters)
+       

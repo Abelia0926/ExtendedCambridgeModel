@@ -1,0 +1,46 @@
+    1: """
+       Useful options to debug LLVM passes
+       
+       llvm.set_option("test", "-debug-pass=Details")
+       llvm.set_option("test", "-debug-pass=Executions")
+       llvm.set_option("test", "-debug-pass=Arguments")
+       llvm.set_option("test", "-debug-pass=Structure")
+       llvm.set_option("test", "-debug-only=loop-vectorize")
+       llvm.set_option("test", "-help-hidden")
+       
+       """
+       
+    1: from llvmlite import binding as llvm
+       
+       
+    1: def _inlining_threshold(optlevel, sizelevel=0):
+           """
+           Compute the inlining threshold for the desired optimisation level
+       
+           Refer to http://llvm.org/docs/doxygen/html/InlineSimple_8cpp_source.html
+           """
+   40:     if optlevel > 2:
+   39:         return 275
+       
+           # -Os
+    1:     if sizelevel == 1:
+               return 75
+       
+           # -Oz
+    1:     if sizelevel == 2:
+               return 25
+       
+    1:     return 225
+       
+       
+    2: def create_pass_manager_builder(opt=2, loop_vectorize=False,
+    1:                                 slp_vectorize=False):
+           """
+           Create an LLVM pass manager with the desired optimisation level and options.
+           """
+   40:     pmb = llvm.create_pass_manager_builder()
+   40:     pmb.opt_level = opt
+   40:     pmb.loop_vectorize = loop_vectorize
+   40:     pmb.slp_vectorize = slp_vectorize
+   40:     pmb.inlining_threshold = _inlining_threshold(opt)
+   40:     return pmb

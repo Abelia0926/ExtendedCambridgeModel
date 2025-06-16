@@ -1,0 +1,39 @@
+    1: from __future__ import annotations
+       
+    1: import os
+    1: import sys
+    1: from typing import Any, Protocol, Sequence, TypeVar, Union
+       
+    1: try:
+    1:     import numpy.typing as npt
+       
+    1:     NumpyArray = npt.NDArray[Any]
+       except ImportError:
+           pass
+       
+    1: if sys.version_info >= (3, 10):
+    1:     from typing import TypeGuard
+       else:
+           try:
+               from typing_extensions import TypeGuard
+           except ImportError:
+       
+               class TypeGuard:  # type: ignore[no-redef]
+                   def __class_getitem__(cls, item: Any) -> type[bool]:
+                       return bool
+       
+       
+    1: Coords = Union[Sequence[float], Sequence[Sequence[float]]]
+       
+       
+    1: _T_co = TypeVar("_T_co", covariant=True)
+       
+       
+    2: class SupportsRead(Protocol[_T_co]):
+    1:     def read(self, __length: int = ...) -> _T_co: ...
+       
+       
+    1: StrOrBytesPath = Union[str, bytes, "os.PathLike[str]", "os.PathLike[bytes]"]
+       
+       
+    1: __all__ = ["TypeGuard", "StrOrBytesPath", "SupportsRead"]

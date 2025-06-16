@@ -1,0 +1,128 @@
+    1: from collections.abc import Iterable
+    1: import numpy as np
+    1: from dataclasses import dataclass, field
+       
+       
+    1: from .waves import create_square_wave
+       
+       
+    3: @dataclass
+    2: class Events:
+    1:     """ Stores a series of (duration, magnitude, start time) triplets that uniquely define events which can either be
+               measurement or input.
+       
+               Events from a scenario file are cast into Events dataclass and vice-versa.
+       
+               Note:
+                   For measurements, duration field is empty array as it is uninterpretable.
+       
+               Attributes:
+                   magnitude (Iterable) : Defines the magnitudes of the events.
+                   start_time (Iterable) : Defines the start times of the events in Unix timestamps [min].
+                   duration (Iterable) : Defines the duration of the events [min].
+       
+           """
+    3:     magnitude: np.ndarray = field(default_factory=lambda: np.array([[]], dtype=float))
+    3:     start_time: np.ndarray = field(default_factory=lambda: np.array([[]], dtype=float))
+    7:     duration: np.ndarray = field(default_factory=lambda: np.array([[]], dtype=float))
+       
+    1:     def __post_init__(self):
+       
+   51:         self.magnitude = np.asarray(self.magnitude).astype(float)
+   51:         self.duration = np.asarray(self.duration).astype(float)
+   51:         self.start_time = np.asarray(self.start_time).astype(float)
+       
+   51:         if self.duration.size:
+   16:             assert not np.any(self.duration < 0)
+   16:             assert (self.magnitude.shape[0] == self.start_time.shape[0] == self.duration.shape[0] and
+   16:             self.magnitude.shape[1] == self.start_time.shape[1] == self.duration.shape[1])
+               else:
+   35:             assert (self.magnitude.shape[0] == self.start_time.shape[0] and
+   35:              self.magnitude.shape[1] == self.start_time.shape[1])
+   51:         assert not np.any(self.start_time < 0)
+   51:         assert not np.any(self.magnitude < 0)
+       
+       
+       
+       
+    1:     def as_dict(self):
+               """ Function to make the translation between the JSON scenario file and class smooth.
+               """
+   20:         self.magnitude = self.magnitude.tolist()
+   20:         self.start_time = self.start_time.tolist()
+   20:         self.duration = self.duration.tolist()
+   20:         return self
+       
+       
+       
+    2: class Signal(Events):
+    1:     """ Extends the Events class with sampled signal.
+       
+               Sampled square wave is generated based on the events information to use directly in solving the differential
+               equations.
+       
+               Attributes:
+                   sampled_signal (np.ndarray) : 2D numpy array, 1st dim: subjects, 2nd dim: timestep in the simulation horizon.
+       
+           """
+    6:     def __init__(
+               self,
+    2:         time: np.ndarray = np.array([], dtype=float),
+    2:         magnitude: Iterable = np.array([[]], dtype=float),
+    2:         start_time: Iterable = np.array([[]], dtype=float),
+    2:         duration: Iterable = np.array([[]], dtype=float),
+    2:         sampling_time: float = 1,
+           ):
+               """
+               Initializes an instance of InputClass.
+       
+               Parameters:
+               - time: np.ndarray
+                   Time array for the signal.
+               - magnitude: tuple
+                   Tuple containing magnitude information for creating the signal.
+               - start_time: tuple
+                   Tuple containing start time information for creating the signal.
+               - duration: tuple
+                   Tuple containing duration information for creating the signal.
+               - sampling_time: float
+                   Sampling time for the signal.
+               """
+   31:         super().__init__(magnitude, start_time, duration)
+   31:         self.time = time
+   31:         self.sampling_time = sampling_time
+   31:         self.magnitude = np.stack(self.magnitude, axis=0)
+   31:         self.start_time = np.stack(self.start_time, axis=0)
+   31:         self.duration = np.stack(self.duration, axis=0)
+               # Initialize signal_openloop using the __create_signal method
+   31:         self.sampled_signal = Signal.__create_signal(time, self.start_time, self.duration, self.magnitude, sampling_time
+               )
+       
+    2:     @staticmethod
+    8:     def __create_signal(
+    1:         time: np.ndarray,
+    1:         start_times: np.ndarray,
+    1:         durations: np.ndarray,
+    1:         amounts: np.ndarray,
+    1:         sampling_time: float,
+    1:         ) -> np.ndarray:
+               """
+               Static method to create a signal based on provided input parameters.
+       
+               Parameters:
+               - time: np.ndarray
+                   Time array for the signal.
+               - start_times: np.ndarray
+                   Array of start times for each event.
+               - durations: np.ndarray
+                   Array of durations for each event.
+               - amounts: np.ndarray
+                   Array of amounts for each event.
+               - sampling_time: float
+                   Sampling time for the signal.
+       
+               Returns:
+               - np.ndarray
+                   3D array representing the generated scenario signal.
+               """
+   31:         return create_square_wave(time, start_times, durations, amounts, sampling_time)

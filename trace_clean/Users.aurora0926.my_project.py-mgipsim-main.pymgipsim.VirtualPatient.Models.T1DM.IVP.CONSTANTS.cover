@@ -1,0 +1,162 @@
+    1: NOMINAL_BW: float = 69.7
+    1: """ Nominal value of the body weight.
+       
+       """
+       
+    1: NOMINAL_GEZI: float = 3.03e-08
+    1: """ Nominal value of the glucose consumption at zero insulin level.
+       
+       """
+       
+    1: NOMINAL_EGP: float = 1.488
+    1: """ Nominal value of the endogenous glucose production.
+       
+       """
+       
+    1: NOMINAL_CI: float = 1200.0
+    1: """ Nominal value of the insulin clearance.
+       
+       """
+       
+    1: NOMINAL_SI: float = 7.0e-04
+    1: """ Nominal value of the insulin sensitivity.
+       
+       """
+       
+    1: NOMINAL_TAU1: float = 70.0500000000000
+    1: """ Nominal value of the time constant of the insulin absorption in the 1st compartment.
+       
+       """
+       
+    1: NOMINAL_TAU2: float = 43.4
+    1: """ Nominal value of the time constant of the insulin absorption in the 2nd compartment.
+       
+       """
+       
+    1: NOMINAL_P2: float = 0.010288
+    1: """ Nominal value of the rate constant of the insulin effect.
+       
+       """
+       
+    1: NOMINAL_TAUD: float = 40.0
+    1: """ Nominal value of the time constant of the CHO absorption.
+       
+       """
+       
+    1: NOMINAL_VG: float = 180.0
+    1: """ Nominal value of the glucose distribution volume.
+       
+       """
+       
+    1: NOMINAL_PARAMS = [NOMINAL_BW, NOMINAL_GEZI, NOMINAL_EGP, NOMINAL_CI, NOMINAL_SI, NOMINAL_TAU1, NOMINAL_TAU2, NOMINAL_P2, NOMINAL_TAUD, NOMINAL_VG]
+       
+    1: SIGMA_BW: float = 1.0
+    1: SIGMA_GEZI: float = 3E-9
+    1: SIGMA_EGP: float = 0.1
+    1: SIGMA_CI: float = 100
+    1: SIGMA_SI: float = 1E-5
+    1: SIGMA_TAU1: float = 1.0
+    1: SIGMA_TAU2: float = 1.0
+    1: SIGMA_P2: float = 1E-3
+    1: SIGMA_TAUD: float = 1.0
+    1: SIGMA_VG: float = 1.0
+       
+    1: MIN_BW: float = 50.0
+    1: """ Minimum value of the body weight.
+       
+       """
+       
+    1: MIN_GEZI: float = 5E-4
+    1: """ Minimum value of the glucose consumption at zero insulin level.
+       
+       """
+       
+    1: MIN_EGP: float = 0.062
+    1: """ Minimum value of the endogenous glucose production.
+       
+       """
+       
+    1: MIN_CI: float = 372.0
+    1: """ Minimum value of the insulin clearance.
+       
+       """
+       
+    1: MIN_SI: float = 2.3E-6
+    1: """ Minimum value of the insulin sensitivity.
+       
+       """
+       
+    1: MIN_TAU1: float = 10.0
+    1: """ Minimum value of the time constant of the insulin absorption in the 1st compartment.
+       
+       """
+       
+    1: MIN_TAU2: float = 10.0
+    1: """ Minimum value of the time constant of the insulin absorption in the 2nd compartment.
+       
+       """
+       
+    1: MIN_P2: float = 1.0/50.0
+    1: """ Minimum value of the rate constant of the insulin effect.
+       
+       """
+       
+    1: MIN_TAUD: float = 10.0
+    1: """ Minimum value of the time constant of the CHO absorption.
+       
+       """
+       
+    1: MIN_VG: float = 100.0
+    1: """ Minimum value of the glucose distribution volume.
+       
+       """
+       
+    1: MAX_BW: float = 110.0
+    1: """ Maximum value of the body weight.
+       
+       """
+       
+    1: MAX_GEZI: float = 7E-2
+    1: """ Maximum value of the glucose consumption at zero insulin level.
+       
+       """
+       
+    1: MAX_EGP: float = 2.23
+    1: """ Maximum value of the endogenous glucose production.
+       
+       """
+       
+    1: MAX_CI: float = 3350.0
+    1: """ Maximum value of the insulin clearance.
+       
+       """
+       
+    1: MAX_SI: float = 0.0021
+    1: """ Maximum value of the insulin sensitivity.
+       
+       """
+       
+    1: MAX_TAU1: float = 70.0#50.0
+    1: """ Maximum value of the time constant of the insulin absorption in the 1st compartment.
+       
+       """
+       
+    1: MAX_TAU2: float = 50.0
+    1: """ Maximum value of the time constant of the insulin absorption in the 2nd compartment.
+       
+       """
+       
+    1: MAX_P2: float = 1.0/10.0
+    1: """ Maximum value of the rate constant of the insulin effect.
+       
+       """
+       
+    1: MAX_TAUD: float = 60.0
+    1: """ Maximum value of the time constant of the CHO absorption.
+       
+       """
+       
+    1: MAX_VG: float = 1000.0
+    1: """ Maximum value of the glucose distribution volume.
+       
+       """

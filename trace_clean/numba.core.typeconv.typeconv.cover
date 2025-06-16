@@ -1,0 +1,128 @@
+    1: try:
+           # This is usually the the first C extension import performed when importing
+           # Numba, if it fails to import, provide some feedback
+    1:     from numba.core.typeconv import _typeconv
+       except ImportError as e:
+           base_url = "https://numba.readthedocs.io/en/stable"
+           dev_url = f"{base_url}/developer/contributing.html"
+           user_url = f"{base_url}/user/faq.html#numba-could-not-be-imported"
+           dashes = '-' * 80
+           msg = (f"Numba could not be imported.\n{dashes}\nIf you are seeing this "
+                  "message and are undertaking Numba development work, you may need "
+                  "to rebuild Numba.\nPlease see the development set up guide:\n\n"
+                  f"{dev_url}.\n\n{dashes}\nIf you are not working on Numba "
+                  f"development, the original error was: '{str(e)}'.\nFor help, "
+                  f"please visit:\n\n{user_url}\n")
+           raise ImportError(msg)
+       
+    1: from numba.core.typeconv import castgraph, Conversion
+    1: from numba.core import types
+       
+       
+    2: class TypeManager(object):
+       
+           # The character codes used by the C/C++ API (_typeconv.cpp)
+    2:     _conversion_codes = {Conversion.safe: ord("s"),
+    1:                          Conversion.unsafe: ord("u"),
+    1:                          Conversion.promote: ord("p"),}
+       
+    1:     def __init__(self):
+    1:         self._ptr = _typeconv.new_type_manager()
+    1:         self._types = set()
+       
+    1:     def select_overload(self, sig, overloads, allow_unsafe,
+                               exact_match_required):
+               sig = [t._code for t in sig]
+               overloads = [[t._code for t in s] for s in overloads]
+               return _typeconv.select_overload(self._ptr, sig, overloads,
+                                                allow_unsafe, exact_match_required)
+       
+    1:     def check_compatible(self, fromty, toty):
+ 2949:         if not isinstance(toty, types.Type):
+                   raise ValueError("Specified type '%s' (%s) is not a Numba type" %
+                                    (toty, type(toty)))
+ 2949:         name = _typeconv.check_compatible(self._ptr, fromty._code, toty._code)
+ 2949:         conv = Conversion[name] if name is not None else None
+ 2949:         assert conv is not Conversion.nil
+ 2949:         return conv
+       
+    1:     def set_compatible(self, fromty, toty, by):
+  208:         code = self._conversion_codes[by]
+  208:         _typeconv.set_compatible(self._ptr, fromty._code, toty._code, code)
+               # Ensure the types don't die, otherwise they may be recreated with
+               # other type codes and pollute the hash table.
+  208:         self._types.add(fromty)
+  208:         self._types.add(toty)
+       
+    1:     def set_promote(self, fromty, toty):
+   16:         self.set_compatible(fromty, toty, Conversion.promote)
+       
+    1:     def set_unsafe_convert(self, fromty, toty):
+  144:         self.set_compatible(fromty, toty, Conversion.unsafe)
+       
+    1:     def set_safe_convert(self, fromty, toty):
+   47:         self.set_compatible(fromty, toty, Conversion.safe)
+       
+    1:     def get_pointer(self):
+   58:         return _typeconv.get_pointer(self._ptr)
+       
+       
+    2: class TypeCastingRules(object):
+    1:     """
+           A helper for establishing type casting rules.
+           """
+    1:     def __init__(self, tm):
+    1:         self._tm = tm
+    1:         self._tg = castgraph.TypeGraph(self._cb_update)
+       
+    1:     def promote(self, a, b):
+               """
+               Set `a` can promote to `b`
+               """
+    9:         self._tg.promote(a, b)
+       
+    1:     def unsafe(self, a, b):
+               """
+               Set `a` can unsafe convert to `b`
+               """
+    9:         self._tg.unsafe(a, b)
+       
+    1:     def safe(self, a, b):
+               """
+               Set `a` can safe convert to `b`
+               """
+    2:         self._tg.safe(a, b)
+       
+    1:     def promote_unsafe(self, a, b):
+               """
+               Set `a` can promote to `b` and `b` can unsafe convert to `a`
+               """
+    9:         self.promote(a, b)
+    9:         self.unsafe(b, a)
+       
+    1:     def safe_unsafe(self, a, b):
+               """
+               Set `a` can safe convert to `b` and `b` can unsafe convert to `a`
+               """
+   10:         self._tg.safe(a, b)
+   10:         self._tg.unsafe(b, a)
+       
+    1:     def unsafe_unsafe(self, a, b):
+               """
+               Set `a` can unsafe convert to `b` and `b` can unsafe convert to `a`
+               """
+    3:         self._tg.unsafe(a, b)
+    3:         self._tg.unsafe(b, a)
+       
+    1:     def _cb_update(self, a, b, rel):
+               """
+               Callback for updating.
+               """
+  207:         if rel == Conversion.promote:
+   16:             self._tm.set_promote(a, b)
+  191:         elif rel == Conversion.safe:
+   47:             self._tm.set_safe_convert(a, b)
+  144:         elif rel == Conversion.unsafe:
+  144:             self._tm.set_unsafe_convert(a, b)
+               else:
+                   raise AssertionError(rel)

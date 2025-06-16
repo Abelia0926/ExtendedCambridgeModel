@@ -1,0 +1,32 @@
+       # -*- coding: utf-8 -*-
+       
+    1: from numba.np.ufunc.decorators import Vectorize, GUVectorize, vectorize, guvectorize
+    1: from numba.np.ufunc._internal import PyUFunc_None, PyUFunc_Zero, PyUFunc_One
+    1: from numba.np.ufunc import _internal, array_exprs
+    1: from numba.np.ufunc.parallel import (threading_layer, get_num_threads,
+                                            set_num_threads, get_thread_id,
+                                            set_parallel_chunksize,
+                                            get_parallel_chunksize)
+       
+       
+    1: if hasattr(_internal, 'PyUFunc_ReorderableNone'):
+    1:     PyUFunc_ReorderableNone = _internal.PyUFunc_ReorderableNone
+    1: del _internal, array_exprs
+       
+       
+    1: def _init():
+       
+    1:     def init_cuda_vectorize():
+               from numba.cuda.vectorizers import CUDAVectorize
+               return CUDAVectorize
+       
+    1:     def init_cuda_guvectorize():
+               from numba.cuda.vectorizers import CUDAGUFuncVectorize
+               return CUDAGUFuncVectorize
+       
+    1:     Vectorize.target_registry.ondemand['cuda'] = init_cuda_vectorize
+    1:     GUVectorize.target_registry.ondemand['cuda'] = init_cuda_guvectorize
+       
+       
+    1: _init()
+    1: del _init

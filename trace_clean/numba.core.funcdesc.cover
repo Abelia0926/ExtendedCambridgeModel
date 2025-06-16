@@ -1,0 +1,230 @@
+    1: """
+       Function descriptors.
+       """
+       
+    1: from collections import defaultdict
+    1: import importlib
+       
+    1: from numba.core import types, itanium_mangler
+    1: from numba.core.utils import _dynamic_modname, _dynamic_module
+       
+       
+    1: def default_mangler(name, argtypes, *, abi_tags=(), uid=None):
+   48:     return itanium_mangler.mangle(name, argtypes, abi_tags=abi_tags, uid=uid)
+       
+       
+    1: def qualifying_prefix(modname, qualname):
+           """
+           Returns a new string that is used for the first half of the mangled name.
+           """
+           # XXX choose a different convention for object mode
+   24:     return '{}.{}'.format(modname, qualname) if modname else qualname
+       
+       
+    2: class FunctionDescriptor(object):
+    1:     """
+           Base class for function descriptors: an object used to carry
+           useful metadata about a natively callable function.
+       
+           Note that while `FunctionIdentity` denotes a Python function
+           which is being concretely compiled by Numba, `FunctionDescriptor`
+           may be more "abstract".
+           """
+    1:     __slots__ = ('native', 'modname', 'qualname', 'doc', 'typemap',
+                        'calltypes', 'args', 'kws', 'restype', 'argtypes',
+                        'mangled_name', 'unique_name', 'env_name', 'global_dict',
+                        'inline', 'noalias', 'abi_tags', 'uid')
+       
+    1:     def __init__(self, native, modname, qualname, unique_name, doc,
+    1:                  typemap, restype, calltypes, args, kws, mangler=None,
+    1:                  argtypes=None, inline=False, noalias=False, env_name=None,
+    1:                  global_dict=None, abi_tags=(), uid=None):
+   24:         self.native = native
+   24:         self.modname = modname
+   24:         self.global_dict = global_dict
+   24:         self.qualname = qualname
+   24:         self.unique_name = unique_name
+   24:         self.doc = doc
+               # XXX typemap and calltypes should be on the compile result,
+               # not the FunctionDescriptor
+   24:         self.typemap = typemap
+   24:         self.calltypes = calltypes
+   24:         self.args = args
+   24:         self.kws = kws
+   24:         self.restype = restype
+               # Argument types
+   24:         if argtypes is not None:
+                   assert isinstance(argtypes, tuple), argtypes
+                   self.argtypes = argtypes
+               else:
+                   # Get argument types from the type inference result
+                   # (note the "arg.FOO" convention as used in typeinfer
+  103:             self.argtypes = tuple(self.typemap['arg.' + a] for a in args)
+   24:         mangler = default_mangler if mangler is None else mangler
+               # The mangled name *must* be unique, else the wrong function can
+               # be chosen at link time.
+   24:         qualprefix = qualifying_prefix(self.modname, self.qualname)
+   24:         self.uid = uid
+   48:         self.mangled_name = mangler(
+   24:             qualprefix, self.argtypes, abi_tags=abi_tags, uid=uid,
+               )
+   24:         if env_name is None:
+   48:             env_name = mangler(".NumbaEnv.{}".format(qualprefix),
+   24:                                self.argtypes, abi_tags=abi_tags, uid=uid)
+   24:         self.env_name = env_name
+   24:         self.inline = inline
+   24:         self.noalias = noalias
+   24:         self.abi_tags = abi_tags
+       
+    1:     def lookup_globals(self):
+               """
+               Return the global dictionary of the function.
+               It may not match the Module's globals if the function is created
+               dynamically (i.e. exec)
+               """
+   22:         return self.global_dict or self.lookup_module().__dict__
+       
+    1:     def lookup_module(self):
+               """
+               Return the module in which this function is supposed to exist.
+               This may be a dummy module if the function was dynamically
+               generated or the module can't be found.
+               """
+   38:         if self.modname == _dynamic_modname:
+                   return _dynamic_module
+               else:
+   38:             try:
+                       # ensure module exist
+   38:                 return importlib.import_module(self.modname)
+                   except ImportError:
+                       return _dynamic_module
+       
+    1:     def lookup_function(self):
+               """
+               Return the original function object described by this object.
+               """
+               return getattr(self.lookup_module(), self.qualname)
+       
+    2:     @property
+    2:     def llvm_func_name(self):
+               """
+               The LLVM-registered name for the raw function.
+               """
+   13:         return self.mangled_name
+       
+           # XXX refactor this
+       
+    2:     @property
+    2:     def llvm_cpython_wrapper_name(self):
+               """
+               The LLVM-registered name for a CPython-compatible wrapper of the
+               raw function (i.e. a PyCFunctionWithKeywords).
+               """
+   44:         return itanium_mangler.prepend_namespace(self.mangled_name,
+   22:                                                  ns='cpython')
+       
+    2:     @property
+    2:     def llvm_cfunc_wrapper_name(self):
+               """
+               The LLVM-registered name for a C-compatible wrapper of the
+               raw function.
+               """
+   11:         return 'cfunc.' + self.mangled_name
+       
+    1:     def __repr__(self):
+               return "<function descriptor %r>" % (self.unique_name)
+       
+    2:     @classmethod
+    2:     def _get_function_info(cls, func_ir):
+               """
+               Returns
+               -------
+               qualname, unique_name, modname, doc, args, kws, globals
+       
+               ``unique_name`` must be a unique name.
+               """
+   24:         func = func_ir.func_id.func
+   24:         qualname = func_ir.func_id.func_qualname
+               # XXX to func_id
+   24:         modname = func.__module__
+   24:         doc = func.__doc__ or ''
+   24:         args = tuple(func_ir.arg_names)
+   24:         kws = ()        # TODO
+   24:         global_dict = None
+       
+   24:         if modname is None:
+                   # Dynamically generated function.
+    4:             modname = _dynamic_modname
+                   # Retain a reference to the dictionary of the function.
+                   # This disables caching, serialization and pickling.
+    4:             global_dict = func_ir.func_id.func.__globals__
+       
+   24:         unique_name = func_ir.func_id.unique_name
+       
+   24:         return qualname, unique_name, modname, doc, args, kws, global_dict
+       
+    2:     @classmethod
+    2:     def _from_python_function(cls, func_ir, typemap, restype,
+    1:                               calltypes, native, mangler=None,
+    1:                               inline=False, noalias=False, abi_tags=()):
+   24:         (qualname, unique_name, modname, doc, args, kws, global_dict,
+   24:          ) = cls._get_function_info(func_ir)
+       
+   48:         self = cls(native, modname, qualname, unique_name, doc,
+   24:                    typemap, restype, calltypes,
+   24:                    args, kws, mangler=mangler, inline=inline, noalias=noalias,
+   24:                    global_dict=global_dict, abi_tags=abi_tags,
+   24:                    uid=func_ir.func_id.unique_id)
+   24:         return self
+       
+       
+    2: class PythonFunctionDescriptor(FunctionDescriptor):
+    1:     """
+           A FunctionDescriptor subclass for Numba-compiled functions.
+           """
+    1:     __slots__ = ()
+       
+    2:     @classmethod
+    2:     def from_specialized_function(cls, func_ir, typemap, restype, calltypes,
+                                         mangler, inline, noalias, abi_tags):
+               """
+               Build a FunctionDescriptor for a given specialization of a Python
+               function (in nopython mode).
+               """
+   48:         return cls._from_python_function(func_ir, typemap, restype, calltypes,
+   24:                                          native=True, mangler=mangler,
+   24:                                          inline=inline, noalias=noalias,
+   24:                                          abi_tags=abi_tags)
+       
+    2:     @classmethod
+    2:     def from_object_mode_function(cls, func_ir):
+               """
+               Build a FunctionDescriptor for an object mode variant of a Python
+               function.
+               """
+               typemap = defaultdict(lambda: types.pyobject)
+               calltypes = typemap.copy()
+               restype = types.pyobject
+               return cls._from_python_function(func_ir, typemap, restype, calltypes,
+                                                native=False)
+       
+       
+    2: class ExternalFunctionDescriptor(FunctionDescriptor):
+    1:     """
+           A FunctionDescriptor subclass for opaque external functions
+           (e.g. raw C functions).
+           """
+    1:     __slots__ = ()
+       
+    1:     def __init__(self, name, restype, argtypes):
+               args = ["arg%d" % i for i in range(len(argtypes))]
+       
+               def mangler(a, x, abi_tags, uid=None):
+                   return a
+               super(ExternalFunctionDescriptor, self
+                     ).__init__(native=True, modname=None, qualname=name,
+                                unique_name=name, doc='', typemap=None,
+                                restype=restype, calltypes=None, args=args,
+                                kws=None,
+                                mangler=mangler,
+                                argtypes=argtypes)

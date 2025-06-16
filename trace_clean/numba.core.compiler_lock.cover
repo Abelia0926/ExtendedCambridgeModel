@@ -1,0 +1,56 @@
+    1: import threading
+    1: import functools
+    1: import numba.core.event as ev
+       
+       
+       # Lock for the preventing multiple compiler execution
+    2: class _CompilerLock(object):
+    1:     def __init__(self):
+    1:         self._lock = threading.RLock()
+       
+    1:     def acquire(self):
+ 1054:         ev.start_event("numba:compiler_lock")
+ 1054:         self._lock.acquire()
+       
+    1:     def release(self):
+ 1054:         self._lock.release()
+ 1054:         ev.end_event("numba:compiler_lock")
+       
+    1:     def __enter__(self):
+ 1054:         self.acquire()
+       
+    1:     def __exit__(self, exc_val, exc_type, traceback):
+ 1054:         self.release()
+       
+    1:     def is_locked(self):
+   25:         is_owned = getattr(self._lock, '_is_owned')
+   25:         if not callable(is_owned):
+                   is_owned = self._is_owned
+   25:         return is_owned()
+       
+    1:     def __call__(self, func):
+   14:         @functools.wraps(func)
+   14:         def _acquire_compile_lock(*args, **kwargs):
+ 1962:             with self:
+  981:                 return func(*args, **kwargs)
+    7:         return _acquire_compile_lock
+       
+    1:     def _is_owned(self):
+               # This method is borrowed from threading.Condition.
+               # Return True if lock is owned by current_thread.
+               # This method is called only if _lock doesn't have _is_owned().
+               if self._lock.acquire(0):
+                   self._lock.release()
+                   return False
+               else:
+                   return True
+       
+       
+    1: global_compiler_lock = _CompilerLock()
+       
+       
+    1: def require_global_compiler_lock():
+           """Sentry that checks the global_compiler_lock is acquired.
+           """
+           # Use assert to allow turning off this check
+   25:     assert global_compiler_lock.is_locked()

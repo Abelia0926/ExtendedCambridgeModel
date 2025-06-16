@@ -1,0 +1,188 @@
+    1: from typing import Optional
+       
+    1: import numpy as np
+    1: from packaging.version import Version, parse
+    1: import pandas as pd
+    1: from pandas.util._decorators import (
+           Appender,
+           Substitution,
+           cache_readonly,
+           deprecate_kwarg,
+       )
+       
+    1: __all__ = [
+           "assert_frame_equal",
+           "assert_index_equal",
+           "assert_series_equal",
+           "data_klasses",
+           "frequencies",
+           "is_numeric_dtype",
+           "testing",
+           "cache_readonly",
+           "deprecate_kwarg",
+           "Appender",
+           "Substitution",
+           "is_int_index",
+           "is_float_index",
+           "make_dataframe",
+           "to_numpy",
+           "PD_LT_1_0_0",
+           "get_cached_func",
+           "get_cached_doc",
+           "call_cached_func",
+           "PD_LT_1_4",
+           "PD_LT_2",
+           "MONTH_END",
+           "QUARTER_END",
+           "YEAR_END",
+           "FUTURE_STACK",
+       ]
+       
+    1: version = parse(pd.__version__)
+       
+    1: PD_LT_2_2_0 = version < Version("2.1.99")
+    1: PD_LT_2_1_0 = version < Version("2.0.99")
+    1: PD_LT_1_0_0 = version < Version("0.99.0")
+    1: PD_LT_1_4 = version < Version("1.3.99")
+    1: PD_LT_2 = version < Version("1.9.99")
+       
+    1: try:
+    1:     from pandas.api.types import is_numeric_dtype
+       except ImportError:
+           from pandas.core.common import is_numeric_dtype
+       
+    1: try:
+    1:     from pandas.tseries import offsets as frequencies
+       except ImportError:
+           from pandas.tseries import frequencies
+       
+    1: data_klasses = (pd.Series, pd.DataFrame)
+       
+    1: try:
+    1:     import pandas.testing as testing
+       except ImportError:
+           import pandas.util.testing as testing
+       
+    1: assert_frame_equal = testing.assert_frame_equal
+    1: assert_index_equal = testing.assert_index_equal
+    1: assert_series_equal = testing.assert_series_equal
+       
+       
+    1: def is_int_index(index: pd.Index) -> bool:
+           """
+           Check if an index is integral
+       
+           Parameters
+           ----------
+           index : pd.Index
+               Any numeric index
+       
+           Returns
+           -------
+           bool
+               True if is an index with a standard integral type
+           """
+           return (
+               isinstance(index, pd.Index)
+               and isinstance(index.dtype, np.dtype)
+               and np.issubdtype(index.dtype, np.integer)
+           )
+       
+       
+    1: def is_float_index(index: pd.Index) -> bool:
+           """
+           Check if an index is floating
+       
+           Parameters
+           ----------
+           index : pd.Index
+               Any numeric index
+       
+           Returns
+           -------
+           bool
+               True if an index with a standard numpy floating dtype
+           """
+           return (
+               isinstance(index, pd.Index)
+               and isinstance(index.dtype, np.dtype)
+               and np.issubdtype(index.dtype, np.floating)
+           )
+       
+       
+    1: try:
+    1:     from pandas._testing import makeDataFrame as make_dataframe
+    1: except ImportError:
+    1:     import string
+       
+    1:     def rands_array(nchars, size, dtype="O"):
+               """
+               Generate an array of byte strings.
+               """
+               rands_chars = np.array(
+                   list(string.ascii_letters + string.digits), dtype=(np.str_, 1)
+               )
+               retval = (
+                   np.random.choice(rands_chars, size=nchars * np.prod(size))
+                   .view((np.str_, nchars))
+                   .reshape(size)
+               )
+               if dtype is None:
+                   return retval
+               else:
+                   return retval.astype(dtype)
+       
+    1:     def make_dataframe():
+               """
+               Simple verion of pandas._testing.makeDataFrame
+               """
+               n = 30
+               k = 4
+               index = pd.Index(rands_array(nchars=10, size=n), name=None)
+               data = {
+                   c: pd.Series(np.random.randn(n), index=index)
+                   for c in string.ascii_uppercase[:k]
+               }
+       
+               return pd.DataFrame(data)
+       
+       
+    1: def to_numpy(po: pd.DataFrame) -> np.ndarray:
+           """
+           Workaround legacy pandas lacking to_numpy
+       
+           Parameters
+           ----------
+           po : Pandas obkect
+       
+           Returns
+           -------
+           ndarray
+               A numpy array
+           """
+           try:
+               return po.to_numpy()
+           except AttributeError:
+               return po.values
+       
+       
+    1: def get_cached_func(cached_prop):
+           try:
+               return cached_prop.fget
+           except AttributeError:
+               return cached_prop.func
+       
+       
+    1: def call_cached_func(cached_prop, *args, **kwargs):
+           f = get_cached_func(cached_prop)
+           return f(*args, **kwargs)
+       
+       
+    1: def get_cached_doc(cached_prop) -> Optional[str]:
+           return get_cached_func(cached_prop).__doc__
+       
+       
+    1: MONTH_END = "M" if PD_LT_2_2_0 else "ME"
+    1: QUARTER_END = "Q" if PD_LT_2_2_0 else "QE"
+    1: YEAR_END = "Y" if PD_LT_2_2_0 else "YE"
+    1: FUTURE_STACK = {} if PD_LT_2_1_0 else {"future_stack": True}

@@ -1,0 +1,82 @@
+    1: from numba.core import errors, ir
+    1: from numba.core.rewrites import register_rewrite, Rewrite
+       
+       
+    3: @register_rewrite('before-inference')
+    2: class RewritePrintCalls(Rewrite):
+    1:     """
+           Rewrite calls to the print() global function to dedicated IR print() nodes.
+           """
+       
+    1:     def match(self, func_ir, block, typemap, calltypes):
+   95:         self.prints = prints = {}
+   95:         self.block = block
+               # Find all assignments with a right-hand print() call
+  622:         for inst in block.find_insts(ir.Assign):
+  527:             if isinstance(inst.value, ir.Expr) and inst.value.op == 'call':
+   96:                 expr = inst.value
+   96:                 try:
+   96:                     callee = func_ir.infer_constant(expr.func)
+    2:                 except errors.ConstantInferenceError:
+    2:                     continue
+   94:                 if callee is print:
+                           if expr.kws:
+                               # Only positional args are supported
+                               msg = ("Numba's print() function implementation does not "
+                                   "support keyword arguments.")
+                               raise errors.UnsupportedError(msg, inst.loc)
+                           prints[inst] = expr
+   95:         return len(prints) > 0
+       
+    1:     def apply(self):
+               """
+               Rewrite `var = call <print function>(...)` as a sequence of
+               `print(...)` and `var = const(None)`.
+               """
+               new_block = self.block.copy()
+               new_block.clear()
+               for inst in self.block.body:
+                   if inst in self.prints:
+                       expr = self.prints[inst]
+                       print_node = ir.Print(args=expr.args, vararg=expr.vararg,
+                                             loc=expr.loc)
+                       new_block.append(print_node)
+                       assign_node = ir.Assign(value=ir.Const(None, loc=expr.loc),
+                                               target=inst.target,
+                                               loc=inst.loc)
+                       new_block.append(assign_node)
+                   else:
+                       new_block.append(inst)
+               return new_block
+       
+       
+    3: @register_rewrite('before-inference')
+    2: class DetectConstPrintArguments(Rewrite):
+    1:     """
+           Detect and store constant arguments to print() nodes.
+           """
+       
+    1:     def match(self, func_ir, block, typemap, calltypes):
+   95:         self.consts = consts = {}
+   95:         self.block = block
+   95:         for inst in block.find_insts(ir.Print):
+                   if inst.consts:
+                       # Already rewritten
+                       continue
+                   for idx, var in enumerate(inst.args):
+                       try:
+                           const = func_ir.infer_constant(var)
+                       except errors.ConstantInferenceError:
+                           continue
+                       consts.setdefault(inst, {})[idx] = const
+       
+   95:         return len(consts) > 0
+       
+    1:     def apply(self):
+               """
+               Store detected constant arguments on their nodes.
+               """
+               for inst in self.block.body:
+                   if inst in self.consts:
+                       inst.consts = self.consts[inst]
+               return self.block

@@ -1,0 +1,739 @@
+       #!/usr/bin/env python
+       # -*- coding: utf-8 -*-
+       #
+       # SPDX-License-Identifier: LGPL-3.0-or-later
+       # Copyright 2016-2022 Stéphane Caron and the qpsolvers contributors
+       
+    1: """Import available QP solvers."""
+       
+    1: import warnings
+    1: from typing import Any, Callable, Dict, List, Optional, Union
+       
+    1: from numpy import ndarray
+    1: from scipy.sparse import csc_matrix
+       
+    1: from ..problem import Problem
+    1: from ..solution import Solution
+       
+    1: available_solvers: List[str] = []
+    1: dense_solvers: List[str] = []
+    1: solve_function: Dict[str, Any] = {}
+    1: sparse_solvers: List[str] = []
+       
+       # Clarabel.rs
+       # ===========
+       
+    2: clarabel_solve_problem: Optional[
+    2:     Callable[
+    2:         [
+    1:             Problem,
+    1:             Optional[ndarray],
+    1:             bool,
+               ],
+    1:         Solution,
+           ]
+    1: ] = None
+       
+    2: clarabel_solve_qp: Optional[
+    2:     Callable[
+    2:         [
+    1:             Union[ndarray, csc_matrix],
+    1:             ndarray,
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             Optional[ndarray],
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             bool,
+               ],
+    1:         Optional[ndarray],
+           ]
+    1: ] = None
+       
+    1: try:
+    1:     from .clarabel_ import clarabel_solve_problem, clarabel_solve_qp
+       
+    1:     solve_function["clarabel"] = clarabel_solve_problem
+    1:     available_solvers.append("clarabel")
+    1:     sparse_solvers.append("clarabel")
+       except ImportError:
+           pass
+       
+       
+       # CVXOPT
+       # ======
+       
+    2: cvxopt_solve_problem: Optional[
+    2:     Callable[
+    2:         [
+    1:             Problem,
+    1:             Optional[str],
+    1:             Optional[ndarray],
+    1:             bool,
+               ],
+    1:         Solution,
+           ]
+    1: ] = None
+       
+    2: cvxopt_solve_qp: Optional[
+    2:     Callable[
+    2:         [
+    1:             Union[ndarray, csc_matrix],
+    1:             ndarray,
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             Optional[ndarray],
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[str],
+    1:             Optional[ndarray],
+    1:             bool,
+               ],
+    1:         Optional[ndarray],
+           ]
+    1: ] = None
+       
+    1: try:
+    1:     from .cvxopt_ import cvxopt_solve_problem, cvxopt_solve_qp
+       
+           solve_function["cvxopt"] = cvxopt_solve_problem
+           available_solvers.append("cvxopt")
+           dense_solvers.append("cvxopt")
+           sparse_solvers.append("cvxopt")
+    1: except ImportError:
+    1:     pass
+       
+       
+       # DAQP
+       # ========
+       
+    2: daqp_solve_qp: Optional[
+    2:     Callable[
+    2:         [
+    1:             ndarray,
+    1:             ndarray,
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             bool,
+               ],
+    1:         Optional[ndarray],
+           ]
+    1: ] = None
+       
+    2: daqp_solve_problem: Optional[
+    2:     Callable[
+    2:         [
+    1:             Problem,
+    1:             Optional[ndarray],
+    1:             bool,
+               ],
+    1:         Solution,
+           ]
+    1: ] = None
+       
+    1: try:
+    1:     from .daqp_ import daqp_solve_problem, daqp_solve_qp
+       
+           solve_function["daqp"] = daqp_solve_problem
+           available_solvers.append("daqp")
+           dense_solvers.append("daqp")
+    1: except ImportError:
+    1:     pass
+       
+       
+       # ECOS
+       # ====
+       
+    2: ecos_solve_problem: Optional[
+    2:     Callable[
+    2:         [
+    1:             Problem,
+    1:             Optional[ndarray],
+    1:             bool,
+               ],
+    1:         Solution,
+           ]
+    1: ] = None
+       
+    2: ecos_solve_qp: Optional[
+    2:     Callable[
+    2:         [
+    1:             ndarray,
+    1:             ndarray,
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             bool,
+               ],
+    1:         Optional[ndarray],
+           ]
+    1: ] = None
+       
+    1: try:
+    1:     from .ecos_ import ecos_solve_problem, ecos_solve_qp
+       
+           solve_function["ecos"] = ecos_solve_problem
+           available_solvers.append("ecos")
+           dense_solvers.append("ecos")  # considered dense as it calls cholesky(P)
+    1: except ImportError:
+    1:     pass
+       
+       
+       # Gurobi
+       # ======
+       
+    2: gurobi_solve_problem: Optional[
+    2:     Callable[
+    2:         [
+    1:             Problem,
+    1:             Optional[ndarray],
+    1:             bool,
+               ],
+    1:         Solution,
+           ]
+    1: ] = None
+       
+    2: gurobi_solve_qp: Optional[
+    2:     Callable[
+    2:         [
+    1:             ndarray,
+    1:             ndarray,
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             bool,
+               ],
+    1:         Optional[ndarray],
+           ]
+    1: ] = None
+       
+    1: try:
+    1:     from .gurobi_ import gurobi_solve_problem, gurobi_solve_qp
+       
+           solve_function["gurobi"] = gurobi_solve_problem
+           available_solvers.append("gurobi")
+           sparse_solvers.append("gurobi")
+    1: except ImportError:
+    1:     pass
+       
+       
+       # HiGHS
+       # =====
+       
+    2: highs_solve_problem: Optional[
+    2:     Callable[
+    2:         [
+    1:             Problem,
+    1:             Optional[ndarray],
+    1:             bool,
+               ],
+    1:         Solution,
+           ]
+    1: ] = None
+       
+    2: highs_solve_qp: Optional[
+    2:     Callable[
+    2:         [
+    1:             Union[ndarray, csc_matrix],
+    1:             ndarray,
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             Optional[ndarray],
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             bool,
+               ],
+    1:         Optional[ndarray],
+           ]
+    1: ] = None
+       
+    1: try:
+    1:     from .highs_ import highs_solve_problem, highs_solve_qp
+       
+           solve_function["highs"] = highs_solve_problem
+           available_solvers.append("highs")
+           sparse_solvers.append("highs")
+    1: except ImportError:
+    1:     pass
+       
+       
+       # HPIPM
+       # =====
+       
+    2: hpipm_solve_problem: Optional[
+    2:     Callable[
+    2:         [
+    1:             Problem,
+    1:             Optional[ndarray],
+    1:             str,
+    1:             bool,
+               ],
+    1:         Solution,
+           ]
+    1: ] = None
+       
+    2: hpipm_solve_qp: Optional[
+    2:     Callable[
+    2:         [
+    1:             Union[ndarray, csc_matrix],
+    1:             ndarray,
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             str,
+    1:             bool,
+               ],
+    1:         Optional[ndarray],
+           ]
+    1: ] = None
+       
+    1: try:
+    1:     from .hpipm_ import hpipm_solve_problem, hpipm_solve_qp
+       
+           solve_function["hpipm"] = hpipm_solve_problem
+           available_solvers.append("hpipm")
+           dense_solvers.append("hpipm")
+    1: except ImportError:
+    1:     pass
+       
+       
+       # MOSEK
+       # =====
+       
+    2: mosek_solve_problem: Optional[
+    2:     Callable[
+    2:         [
+    1:             Problem,
+    1:             Optional[ndarray],
+    1:             bool,
+               ],
+    1:         Solution,
+           ]
+    1: ] = None
+       
+    2: mosek_solve_qp: Optional[
+    2:     Callable[
+    2:         [
+    1:             Union[ndarray, csc_matrix],
+    1:             ndarray,
+    1:             Union[ndarray, csc_matrix],
+    1:             ndarray,
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             bool,
+               ],
+    1:         Optional[ndarray],
+           ]
+    1: ] = None
+       
+    1: try:
+    1:     from .mosek_ import mosek_solve_problem, mosek_solve_qp
+       
+           solve_function["mosek"] = mosek_solve_problem
+           available_solvers.append("mosek")
+           sparse_solvers.append("mosek")
+    1: except ImportError:
+    1:     pass
+       
+       
+       # OSQP
+       # ====
+       
+    2: osqp_solve_problem: Optional[
+    2:     Callable[
+    2:         [
+    1:             Problem,
+    1:             Optional[ndarray],
+    1:             bool,
+               ],
+    1:         Solution,
+           ]
+    1: ] = None
+       
+    2: osqp_solve_qp: Optional[
+    2:     Callable[
+    2:         [
+    1:             Union[ndarray, csc_matrix],
+    1:             ndarray,
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             Optional[ndarray],
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             bool,
+               ],
+    1:         Optional[ndarray],
+           ]
+    1: ] = None
+       
+    1: try:
+    1:     from .osqp_ import osqp_solve_problem, osqp_solve_qp
+       
+           solve_function["osqp"] = osqp_solve_problem
+           available_solvers.append("osqp")
+           sparse_solvers.append("osqp")
+    1: except ImportError:
+    1:     pass
+       
+       
+       # PIQP
+       # =======
+       
+    2: piqp_solve_qp: Optional[
+    2:     Callable[
+    2:         [
+    1:             Union[ndarray, csc_matrix],
+    1:             Union[ndarray, csc_matrix],
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             bool,
+    1:             Optional[str],
+               ],
+    1:         Optional[ndarray],
+           ]
+    1: ] = None
+       
+    2: piqp_solve_problem: Optional[
+    2:     Callable[
+    2:         [
+    1:             Problem,
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             bool,
+    1:             Optional[str],
+               ],
+    1:         Solution,
+           ]
+    1: ] = None
+       
+    1: try:
+    1:     from .piqp_ import piqp_solve_problem, piqp_solve_qp
+       
+           solve_function["piqp"] = piqp_solve_problem
+           available_solvers.append("piqp")
+           dense_solvers.append("piqp")
+           sparse_solvers.append("piqp")
+    1: except ImportError:
+    1:     pass
+       
+       
+       # ProxQP
+       # =======
+       
+    2: proxqp_solve_qp: Optional[
+    2:     Callable[
+    2:         [
+    1:             Union[ndarray, csc_matrix],
+    1:             Union[ndarray, csc_matrix],
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             bool,
+    1:             Optional[str],
+               ],
+    1:         Optional[ndarray],
+           ]
+    1: ] = None
+       
+    2: proxqp_solve_problem: Optional[
+    2:     Callable[
+    2:         [
+    1:             Problem,
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             bool,
+    1:             Optional[str],
+               ],
+    1:         Solution,
+           ]
+    1: ] = None
+       
+    1: try:
+    1:     from .proxqp_ import proxqp_solve_problem, proxqp_solve_qp
+       
+           solve_function["proxqp"] = proxqp_solve_problem
+           available_solvers.append("proxqp")
+           dense_solvers.append("proxqp")
+           sparse_solvers.append("proxqp")
+    1: except ImportError:
+    1:     pass
+       
+       
+       # QPALM
+       # =====
+       
+    2: qpalm_solve_qp: Optional[
+    2:     Callable[
+    2:         [
+    1:             Union[ndarray, csc_matrix],
+    1:             Union[ndarray, csc_matrix],
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             bool,
+               ],
+    1:         Optional[ndarray],
+           ]
+    1: ] = None
+       
+    2: qpalm_solve_problem: Optional[
+    2:     Callable[
+    2:         [
+    1:             Problem,
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             bool,
+               ],
+    1:         Solution,
+           ]
+    1: ] = None
+       
+    1: try:
+    1:     from .qpalm_ import qpalm_solve_problem, qpalm_solve_qp
+       
+           solve_function["qpalm"] = qpalm_solve_problem
+           available_solvers.append("qpalm")
+           sparse_solvers.append("qpalm")
+    1: except ImportError:
+    1:     pass
+       
+       
+       # qpOASES
+       # =======
+       
+    2: qpoases_solve_problem: Optional[
+    2:     Callable[
+    2:         [
+    1:             Problem,
+    1:             Optional[ndarray],
+    1:             bool,
+    1:             int,
+    1:             Optional[float],
+               ],
+    1:         Solution,
+           ]
+    1: ] = None
+       
+    2: qpoases_solve_qp: Optional[
+    2:     Callable[
+    2:         [
+    1:             ndarray,
+    1:             ndarray,
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             bool,
+    1:             int,
+    1:             Optional[float],
+               ],
+    1:         Optional[ndarray],
+           ]
+    1: ] = None
+       
+    1: try:
+    1:     from .qpoases_ import qpoases_solve_problem, qpoases_solve_qp
+       
+           solve_function["qpoases"] = qpoases_solve_problem
+           available_solvers.append("qpoases")
+           dense_solvers.append("qpoases")
+    1: except ImportError:
+    1:     pass
+       
+       
+       # qpSWIFT
+       # =======
+       
+    2: qpswift_solve_problem: Optional[
+    2:     Callable[
+    2:         [
+    1:             Problem,
+    1:             Optional[ndarray],
+    1:             bool,
+               ],
+    1:         Solution,
+           ]
+    1: ] = None
+       
+    2: qpswift_solve_qp: Optional[
+    2:     Callable[
+    2:         [
+    1:             ndarray,
+    1:             ndarray,
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             bool,
+               ],
+    1:         Optional[ndarray],
+           ]
+    1: ] = None
+       
+    1: try:
+    1:     from .qpswift_ import qpswift_solve_problem, qpswift_solve_qp
+       
+           solve_function["qpswift"] = qpswift_solve_problem
+           available_solvers.append("qpswift")
+           dense_solvers.append("qpswift")
+    1: except ImportError:
+    1:     pass
+       
+       
+       # quadprog
+       # ========
+       
+    2: quadprog_solve_qp: Optional[
+    2:     Callable[
+    2:         [
+    1:             ndarray,
+    1:             ndarray,
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             bool,
+               ],
+    1:         Optional[ndarray],
+           ]
+    1: ] = None
+       
+    2: quadprog_solve_problem: Optional[
+    2:     Callable[
+    2:         [
+    1:             Problem,
+    1:             Optional[ndarray],
+    1:             bool,
+               ],
+    1:         Solution,
+           ]
+    1: ] = None
+       
+    1: try:
+    1:     from .quadprog_ import quadprog_solve_problem, quadprog_solve_qp
+       
+           solve_function["quadprog"] = quadprog_solve_problem
+           available_solvers.append("quadprog")
+           dense_solvers.append("quadprog")
+    1: except ImportError:
+    1:     pass
+       
+       
+       # SCS
+       # ========
+       
+    2: scs_solve_problem: Optional[
+    2:     Callable[
+    2:         [
+    1:             Problem,
+    1:             Optional[ndarray],
+    1:             bool,
+               ],
+    1:         Solution,
+           ]
+    1: ] = None
+       
+    2: scs_solve_qp: Optional[
+    2:     Callable[
+    2:         [
+    1:             Union[ndarray, csc_matrix],
+    1:             ndarray,
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             Optional[ndarray],
+    1:             Optional[Union[ndarray, csc_matrix]],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             bool,
+               ],
+    1:         Optional[ndarray],
+           ]
+    1: ] = None
+       
+    1: try:
+    1:     from .scs_ import scs_solve_problem, scs_solve_qp
+       
+           solve_function["scs"] = scs_solve_problem
+           available_solvers.append("scs")
+           sparse_solvers.append("scs")
+    1: except ImportError:
+    1:     pass
+       
+       
+    1: if not available_solvers:
+           warnings.warn(
+               "no QP solver found on your system, "
+               "you can install solvers from PyPI by "
+               "``pip install qpsolvers[open_source_solvers]``"
+           )
+       
+       
+    1: __all__ = [
+           "available_solvers",
+           "clarabel_solve_qp",
+           "cvxopt_solve_qp",
+           "daqp_solve_qp",
+           "dense_solvers",
+           "ecos_solve_qp",
+           "gurobi_solve_qp",
+           "highs_solve_qp",
+           "hpipm_solve_qp",
+           "mosek_solve_qp",
+           "osqp_solve_qp",
+           "piqp_solve_qp",
+           "proxqp_solve_qp",
+           "qpalm_solve_qp",
+           "qpoases_solve_qp",
+           "qpswift_solve_qp",
+           "quadprog_solve_qp",
+           "scs_solve_qp",
+           "solve_function",
+           "sparse_solvers",
+       ]

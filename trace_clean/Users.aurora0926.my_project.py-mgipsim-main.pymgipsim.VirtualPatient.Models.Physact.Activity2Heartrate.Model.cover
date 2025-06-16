@@ -1,0 +1,137 @@
+    1: from pymgipsim.Utilities.units_conversions_constants import UnitConversion
+    1: from pymgipsim.VirtualPatient.Models.Model import BaseModel
+    1: from pymgipsim.Utilities.Timestamp import Timestamp
+    1: from .Parameters import Parameters
+    1: from .States import States
+    1: from .Inputs import Inputs
+    1: import numpy as np
+    1: from numba import njit
+       
+       
+    2: class Model(BaseModel, UnitConversion):
+    1:     name = "Physact.Activity2Heartrate"
+    1:     output_state = 0
+       
+    1:     def __init__(self, sampling_time):
+    1:         self.parameters = Parameters()
+    1:         self.inputs = Inputs()
+    1:         self.states = States()
+    1:         self.initial_conditions = States()
+    1:         self.time = Timestamp()
+    1:         self.sampling_time = sampling_time
+       
+       
+    2:     @staticmethod
+    2:     @njit("float64[:,:](float64[:,:],float64,float64[:,:],float64[:,:])", cache=True)
+    2:     def model(states, time, parameters, inputs):
+               beta, VT_HRR, a, HRmax, HRrest, MaxSpeed, MaxGrade, BW, MAP, vGmax,\
+                   aL, aM, p0, r0, G0, M0, taoM, vMmax, GT, taoL, aG = parameters.T
+       
+               G, M, vL = states.T
+       
+               running_speed, running_incline, cycling_power, power, _ = inputs.T
+       
+               pbar = power / MAP
+               pt = MAP * VT_HRR
+       
+               vLmax = 1.0 - vGmax
+               vMM = vMmax * ((1.0 / (1.0 + np.exp(-(M - M0) / aM))))
+               vLmax = vLmax - (vMM / 2.0)
+       
+       
+               taor = (r0) * (1.0 - np.exp(-G0 / a)) / p0
+               taop = (np.exp(1.0) - 1.0) / ((1.0 / taor) * (r0 + 60.0*(1.0 - np.exp(-1))) * (1.0 - np.exp(-GT / a)) - p0)
+       
+               DLp = vLmax * 2.0 * (1. / (1.0 + np.exp(-pbar / aL)) - 0.5)
+               power_pt = np.exp(power / pt)
+               fprod_p = power_pt - 1.0
+               frem_p = r0 + 60.0*(1.0 - 1.0/power_pt)
+               frem_G = 1.0 - np.exp(-G / a)
+               frem_pG = frem_p * frem_G
+               Gdotp = p0 + ((1.0 / taop) * fprod_p) - ((1.0 / taor) * frem_pG)
+               Mdotp = 1.0 / taoM * (beta * pbar - M)
+               vdotLp = (1.0 / taoL) * (DLp - vL)
+       
+               # binmap = np.logical_and(power < np.finfo(np.float64).eps, G < np.finfo(np.float64).eps)
+               # Gdotp[binmap] = 0.0
+               # Mdotp[binmap] = 0.0
+               # vdotLp[binmap] = 0.0
+       
+       
+               return np.column_stack((Gdotp, Mdotp, vdotLp))
+       
+    2:     @staticmethod
+    2:     def rate_equations(states, time, parameters, inputs):
+    1:         G = states[:,0,:]
+    1:         M = states[:,1,:]
+    1:         vL = states[:,2,:]
+       
+    1:         beta, VT_HRR, a, HRmax, HRrest, MaxSpeed, MaxGrade, BW, MAP, vGmax,\
+    2:             aL, aM, p0, r0, G0, M0, taoM, vMmax, GT, taoL, aG = parameters.T
+       
+       
+    1:         vMM = vMmax[:,None] * (1. / (1 + np.exp(-(M - M0[:,None]) / aM[:,None])))
+    1:         vG_max = vGmax[:,None] - (vMM / 2)
+    1:         vGG = vG_max* (1 - np.exp(-((G - G0[:,None])/ aG[:,None])))
+       
+    1:         HRR = HRmax - HRrest
+    1:         vmin = HRrest / HRR
+    1:         v = vmin[:,None] + (vL + vGG + vMM)
+    1:         heart_rate = v * HRR[:,None]
+       
+    2:         for rates,rest_rate in zip(heart_rate,HRrest):
+    1:             rates[rates<rest_rate] = rest_rate
+       
+    1:         return heart_rate
+       
+    2:     @staticmethod
+    2:     def output_equilibrium(parameters, inputs):
+               pass
+       
+    1:     def update_scenario(self, scenario):
+               pass
+       
+    1:     def preprocessing(self):
+    1:         self.initial_conditions.as_array = np.zeros((self.parameters.as_array.shape[0], 3))
+    2:         self.states.as_array = np.zeros(
+    1:             (self.inputs.as_array.shape[0], self.initial_conditions.as_array.shape[1], self.inputs.as_array.shape[2]))
+       
+       
+    1:         beta, VT_HRR, a, HRmax, HRrest, MaxSpeed, MaxGrade, BW, MAP, vGmax,\
+    2:             aL, aM, p0, r0, G0, M0, taoM, vMmax, GT, taoL, aG = self.parameters.as_array.T
+       
+    1:         running_speed, running_incline, cycling_power, standard_power, _ = self.inputs.as_array.transpose([1,0,2])
+       
+    1:         ASCMLim = 5 * 0.44704 * 60
+    1:         speed = running_speed * 0.44704 * 60
+    1:         grade = running_incline / 100.0
+    1:         METACSM = np.zeros_like(running_speed)
+    1:         binmap = np.logical_and(speed>np.finfo(np.float64).eps,speed < 3.5 * 0.44704 * 60)
+    1:         METACSM[binmap] = (0.1 * speed[binmap] + 1.8 * grade[binmap] * speed[binmap] + 3.5) / 3.5
+    1:         binmap = np.logical_and(speed >= 3.5 * 0.44704 * 60, speed < ASCMLim)
+    4:         METACSM[binmap] = ((1 - speed[binmap] / ASCMLim) * (0.1 * speed[binmap] + 1.8 * grade[binmap] * speed[binmap]) + speed[binmap] / ASCMLim * (
+    3:                     0.2 * speed[binmap] + 0.9 * grade[binmap] * speed[binmap])) / 3.5 + 1
+    1:         binmap = np.logical_and(speed >= 3.5 * 0.44704 * 60, speed >= ASCMLim)
+    1:         METACSM[binmap] = (0.2 * speed[binmap] + 0.9 * grade[binmap] * speed[binmap] + 3.5) / 3.5
+    1:         running_power = METACSM * 3.5 * 7
+       
+    1:         binmap = running_power > MAP[:,None]
+    1:         running_power[binmap] = (MAP[:,None]*np.ones_like(binmap))[binmap]
+    1:         METACSM[binmap] = ((MAP[:,None]*np.ones_like(binmap))[binmap])/7/3.5
+       
+    1:         binmap = cycling_power > MAP[:, None]
+    1:         METACSM[binmap] = ((10.8*cycling_power/(BW[:,None]*np.ones_like(binmap))+7.0)/3.5)[binmap]
+       
+    1:         power = cycling_power + running_power
+       
+               # MAP = 0.9*MAP
+               # beta = 1.1*beta
+    1:         limit = MAP*VT_HRR*1.1
+    1:         binmap = power>limit[:,None]
+    1:         power[binmap] = (limit[:,None]*np.ones_like(binmap))[binmap]
+       
+    1:         self.inputs.standard_power.sampled_signal = power
+    1:         self.inputs.METACSM.sampled_signal = METACSM
+    1:         pass
+       
+       

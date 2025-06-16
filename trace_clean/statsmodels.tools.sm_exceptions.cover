@@ -1,0 +1,260 @@
+    1: """
+       Contains custom errors and warnings.
+       
+       Errors should derive from Exception or another custom error. Custom errors are
+       only needed it standard errors, for example ValueError or TypeError, are not
+       accurate descriptions of the reason for the error.
+       
+       Warnings should derive from either an existing warning or another custom
+       warning, and should usually be accompanied by a sting using the format
+       warning_name_doc that services as a generic message to use when the warning is
+       raised.
+       """
+       
+    1: import warnings
+       
+       
+       # Errors
+    2: class PerfectSeparationError(Exception):
+    1:     """
+           Error due to perfect prediction in discrete models
+           """
+       
+    1:     pass
+       
+       
+    2: class MissingDataError(Exception):
+    1:     """
+           Error raised if variables contain missing values when forbidden
+           """
+       
+    1:     pass
+       
+       
+    2: class X13NotFoundError(Exception):
+    1:     """
+           Error locating the X13 binary
+           """
+       
+    1:     pass
+       
+       
+    2: class X13Error(Exception):
+    1:     """
+           Error when running modes using X13
+           """
+       
+    1:     pass
+       
+       
+    2: class ParseError(Exception):
+    1:     """
+           Error when parsing a docstring.
+           """
+       
+    1:     def __str__(self):
+               message = self.args[0]
+               if hasattr(self, "docstring"):
+                   message = f"{message} in {self.docstring}"
+               return message
+       
+       
+       # Warning
+    2: class X13Warning(Warning):
+    1:     """
+           Unexpected conditions when using X13
+           """
+    1:     pass
+       
+       
+    2: class IOWarning(RuntimeWarning):
+    1:     """
+           Resource not deleted
+           """
+       
+    1:     pass
+       
+       
+    2: class ModuleUnavailableWarning(Warning):
+    1:     """
+           Non-fatal import error
+           """
+    1:     pass
+       
+       
+    1: module_unavailable_doc = """
+       The module {0} is not available. Cannot run in parallel.
+       """
+       
+       
+    2: class ModelWarning(UserWarning):
+    1:     """
+           Base internal Warning class to simplify end-user filtering
+           """
+    1:     pass
+       
+       
+    2: class ConvergenceWarning(ModelWarning):
+    1:     """
+           Nonlinear optimizer failed to converge to a unique solution
+           """
+    1:     pass
+       
+       
+    1: convergence_doc = """
+       Failed to converge on a solution.
+       """
+       
+       
+    2: class CacheWriteWarning(ModelWarning):
+    1:     """
+           Attempting to write to a read-only cached value
+           """
+       
+    1:     pass
+       
+       
+    2: class IterationLimitWarning(ModelWarning):
+    1:     """
+           Iteration limit reached without convergence
+           """
+       
+    1:     pass
+       
+       
+    1: iteration_limit_doc = """
+       Maximum iteration reached.
+       """
+       
+       
+    2: class InvalidTestWarning(ModelWarning):
+    1:     """
+           Test not applicable to model
+           """
+       
+    1:     pass
+       
+       
+    2: class NotImplementedWarning(ModelWarning):
+    1:     """
+           Non-fatal function non-implementation
+           """
+       
+    1:     pass
+       
+       
+    2: class OutputWarning(ModelWarning):
+    1:     """
+           Function output contains atypical values
+           """
+       
+    1:     pass
+       
+       
+    2: class DomainWarning(ModelWarning):
+    1:     """
+           Variables are not compliant with required domain constraints
+           """
+       
+    1:     pass
+       
+       
+    2: class ValueWarning(ModelWarning):
+    1:     """
+           Non-fatal out-of-range value given
+           """
+       
+    1:     pass
+       
+       
+    2: class EstimationWarning(ModelWarning):
+    1:     """
+           Unexpected condition encountered during estimation
+           """
+       
+    1:     pass
+       
+       
+    2: class SingularMatrixWarning(ModelWarning):
+    1:     """
+           Non-fatal matrix inversion affects output results
+           """
+       
+    1:     pass
+       
+       
+    2: class HypothesisTestWarning(ModelWarning):
+    1:     """
+           Issue occurred when performing hypothesis test
+           """
+       
+    1:     pass
+       
+       
+    2: class InterpolationWarning(ModelWarning):
+    1:     """
+           Table granularity and limits restrict interpolation
+           """
+       
+    1:     pass
+       
+       
+    2: class PrecisionWarning(ModelWarning):
+    1:     """
+           Numerical implementation affects precision
+           """
+       
+    1:     pass
+       
+       
+    2: class SpecificationWarning(ModelWarning):
+    1:     """
+           Non-fatal model specification issue
+           """
+       
+    1:     pass
+       
+       
+    2: class HessianInversionWarning(ModelWarning):
+    1:     """
+           Hessian noninvertible and standard errors unavailable
+           """
+       
+    1:     pass
+       
+       
+    2: class CollinearityWarning(ModelWarning):
+    1:     """
+           Variables are highly collinear
+           """
+       
+    1:     pass
+       
+       
+    2: class PerfectSeparationWarning(ModelWarning):
+    1:     """
+           Perfect separation or prediction
+           """
+       
+    1:     pass
+       
+       
+    2: class InfeasibleTestError(RuntimeError):
+    1:     """
+           Test statistic cannot be computed
+           """
+       
+    1:     pass
+       
+       
+    1: recarray_exception = """
+       recarray support has been removed from statsmodels. Use pandas DataFrames
+       for structured data.
+       """
+       
+       
+    1: warnings.simplefilter("always", ModelWarning)
+    1: warnings.simplefilter("always", ConvergenceWarning)
+    1: warnings.simplefilter("always", CacheWriteWarning)
+    1: warnings.simplefilter("always", IterationLimitWarning)
+    1: warnings.simplefilter("always", InvalidTestWarning)

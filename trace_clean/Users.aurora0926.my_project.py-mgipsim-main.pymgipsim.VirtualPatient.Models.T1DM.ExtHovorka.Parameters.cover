@@ -1,0 +1,63 @@
+    1: import json
+    1: import os
+    1: import numpy as np
+    1: from dataclasses import dataclass
+    1: from ...Parameters import BaseParameters
+    1: from pymgipsim.Utilities.Scenario import scenario
+    1: from pymgipsim.Utilities.paths import models_path
+       
+    1: from .CONSTANTS import *
+       
+    2: class Parameters(BaseParameters):
+    1:     """ Stores the Hovorka model parameters.
+                   20 virtual patients available in the ./Patient folder.
+       
+                   Hint:
+                       .as_array() function returns 2D numpy array where:
+                       1st dim: Subject in the virtual cohort
+                       2nd dim: Parameter
+       
+       
+           """
+    1:     def __init__(self, parameters: np.ndarray = np.array([], dtype=float), number_of_subjects = 1):
+    3:         if parameters.size:
+    1:             (self.kb1, self.kb2, self.kb3, self.EGP0, self.ke, self.F01, self.AG, self.tmaxI, self.tmaxG,
+    1:              self.p3, self.p4, self.p5, self.beta, self.a, self.BW, self.HRrest, self.HRmax,
+    1:              self.VG, self.VI, self.VT_HRR,
+    1:              self.k12, self.ka1, self.ka2, self.ka3, self.aSI, self.b, self.c, self.dSI,
+    2:              self.tsub, self.p1, self.p2, self.p6, self.p7, self.p8, self.tmaxGFast) = parameters.T
+               else:
+    2:             pass
+       
+    2:     @property
+    2:     def as_array(self):
+   81:         parameters = [self.kb1, self.kb2, self.kb3, self.EGP0, self.ke, self.F01, self.AG, self.tmaxI, self.tmaxG,
+   24:              self.p3, self.p4, self.p5, self.beta, self.a, self.BW, self.HRrest, self.HRmax,
+    9:              self.VG, self.VI, self.VT_HRR,
+   24:              self.k12, self.ka1, self.ka2, self.ka3, self.aSI, self.b, self.c, self.dSI,
+   21:              self.tsub, self.p1, self.p2, self.p6, self.p7, self.p8, self.tmaxGFast]
+    3:         self._as_array = np.asarray(parameters).T
+    3:         return self._as_array
+       
+    2:     @as_array.setter
+    2:     def as_array(self, array: np.ndarray):
+               (self.kb1, self.kb2, self.kb3, self.EGP0, self.ke, self.F01, self.AG, self.tmaxI, self.tmaxG,
+                    self.p3, self.p4, self.p5, self.beta, self.a, self.BW, self.HRrest, self.HRmax,
+                    self.VG, self.VI, self.VT_HRR,
+                    self.k12, self.ka1, self.ka2, self.ka3, self.aSI, self.b, self.c, self.dSI,
+                    self.tsub, self.p1, self.p2, self.p6, self.p7, self.p8, self.tmaxGFast) = array.T
+               self._as_array = np.asarray(array)
+       
+       
+    2:     @staticmethod
+    2:     def generate(scenario_instance: scenario):
+    1:         cohort_parameters = []
+    1:         path = os.path.join(models_path, scenario_instance.patient.model.name.replace(".", os.sep), "Patients")
+    2:         for name in scenario_instance.patient.files:
+    1:             abs_path = os.path.join(path, name)
+    2:             with open(abs_path) as f:
+    1:                 params_dict = json.load(f)
+    1:             parameters = Parameters()
+    1:             parameters.fromJSON(params_dict["model_parameters"])
+    1:             cohort_parameters.append(parameters.as_array)
+    1:         return np.concatenate(cohort_parameters)

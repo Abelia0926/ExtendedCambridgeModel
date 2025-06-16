@@ -1,0 +1,28 @@
+    1: import argparse, json, pprint
+    1: import os
+    1: from ..Utilities.paths import default_settings_path
+    1: from ..Utilities.Scenario import scenario, load_scenario
+    1: import colorama
+    1: from pymgipsim.Interface.Messages.parser_colors import color_help_text, color_group_header_text
+       
+    1: default_settings = load_scenario(os.path.join(default_settings_path, "scenario_default.json"))
+       
+    1: def generate_load_parser(parent_parser = [], add_help = True):
+       
+    2:     parser = argparse.ArgumentParser(
+    1:                                     prog = 'Load Scenario',
+    1:                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    1:                                     parents = parent_parser,
+    1:                                     add_help = add_help
+                                           )
+       
+    1:     load_scenario_group = parser.add_argument_group(color_group_header_text('Load Scenario'))
+    2:     load_scenario_group.add_argument(
+    1:                                     '-sn',
+    1:                                     '--scenario-name',\
+    1:                                     help = color_help_text("Scenario file name"),\
+    1:                                     dest = 'scenario_name',\
+    1:                                     type = str
+                                           )
+       
+    1:     return parser

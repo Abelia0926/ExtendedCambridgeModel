@@ -1,0 +1,265 @@
+    1: from dataclasses import dataclass
+    1: from pymgipsim.InputGeneration.signal import Events
+    1: import sys, json, numpy
+       
+    3: @dataclass(slots=True)
+    2: class settings():
+    1:     """ General, simulator wide settings.
+       
+                   Mirrors the settings field of the scenario JSON file.
+       
+                   Parameters:
+                       sampling_time : Sampling time of the simulation [min].
+                       solver_name : ODE solver name (Euler or RK4)
+                       number_of_subjects : Cohort simulation size.
+                       start_time : Start time of the simulation in %d-%m-%Y %H:%M:%S datetime format.
+                       end_time : End time of the simulation in %d-%m-%Y %H:%M:%S datetime format.
+                       simulator_name : Currently openloop single scale, will be extended with more capabilities.
+       
+           """
+    1:     sampling_time: int
+    1:     simulator_name: str
+    1:     solver_name: str
+    1:     save_directory: str
+    1:     start_time: int
+    1:     end_time: int
+    1:     random_seed: int
+    1:     random_state: dict
+       
+    3: @dataclass(slots=True)
+    2: class controller():
+    1:     name: str
+    1:     parameters: list
+       
+       
+    3: @dataclass(slots=True)
+    2: class model():
+    1:     """ Model descriptor.
+       
+                   Mirrors the model field of the scenario JSON file.
+       
+                   Parameters:
+                       name : Name of the model (T1DM.Hovorka, T1DM.IVP, T2DM.Jauslin)
+                       parameters : Array of model specific parameter values.
+                       initial_conditions : Array of initial states for the simulation
+       
+           """
+    1:     name: str = None
+    1:     parameters: list = None
+    1:     initial_conditions: list = None
+       
+    3: @dataclass(slots=True)
+    2: class mscale():
+    1:     """ Model descriptor.
+       
+                   Mirrors the model field of the scenario JSON file.
+       
+                   Parameters:
+                       name : Name of the model (T1DM.Hovorka, T1DM.IVP, T2DM.Jauslin)
+                       parameters : Array of model specific parameter values.
+                       initial_conditions : Array of initial states for the simulation
+       
+           """
+    1:     models: list = None
+    1:     parameters: list = None
+       
+       
+       
+    3: @dataclass(slots=True)
+    2: class demographic_info():
+    1:     """ Model independent patient information.
+       
+                   Mirrors the demographic info field of the scenario JSON file.
+       
+                   Parameters:
+                       body_weight : Body weights of the patients [kg].
+                       egfr : Glomural filtration rates [mL/min/1.73 m^2 BSA]
+                       basal : Basal insulin rates [U/hr].
+                       height : Height [m].
+                       total_daily_basal : [U]
+       
+           """
+    1:     body_weight_range: list = None
+    1:     body_weight: list = None
+       
+    1:     renal_function_category: list = None
+    1:     egfr: list = None
+    1:     basal: list = None
+    1:     height: list = None
+    1:     total_daily_basal: list = None
+    1:     carb_insulin_ratio: list = None
+    1:     resting_heart_rate: list = None
+    1:     correction_bolus: list = None
+    1:     HbA1c: list = None
+    1:     waist_size: list = None
+       
+       
+    1:     baseline_daily_energy_intake: list = None
+    1:     baseline_daily_energy_expenditure: list = None
+    1:     baseline_daily_urinary_glucose_excretion: list = None
+       
+    3: @dataclass(slots=True)
+    2: class patient():
+    1:     """ Describes the patient/cohort.
+       
+                   Mirrors the patient field of the scenario JSON file.
+       
+                   Parameters:
+                       demographic_info (demographic_info) : Stores the model independent patient information.
+                       model (model) : Model descriptor.
+       
+           """
+    1:     demographic_info: demographic_info = None
+    1:     model: model = None
+    1:     mscale: mscale = None
+    1:     files: list = None
+    1:     number_of_subjects: int = None
+       
+    1:     def __post_init__(self):
+    5:         scenario_module = sys.modules[__name__]
+               # Casts imported dictionaries to corresponding dataclasses
+   30:         for attribute in self.__slots__:
+   25:             if not (attribute == 'files' or attribute == 'number_of_subjects'):
+   15:                 try:
+   15:                     setattr(self, attribute, getattr(scenario_module, attribute)(**getattr(self, attribute)))
+                       except:
+                           setattr(self, attribute, None)
+                           # print("Loaded scenario lacks: " + attribute + " information.")
+       
+       
+       
+    3: @dataclass(slots=True)
+    2: class inputs():
+    1:     """ Stores all the possible inputs to all the possible models.
+       
+                   Mirrors the patient field of the scenario JSON file.
+       
+                   Note:
+                       Undefined/ not required inputs for a specific model are None.
+       
+                   Parameters:
+                       meal_carb (Events) : Carb content of the meals [g].
+                       snack_carb (Events) : Carb content of the snacks [g].
+                       sgl2i (Events) : SGL2i drug intakes [mg].
+                       basal_insulin (Events) : Basal insulin rates [U/hr].
+                       bolus_insulin (Events) : Bolus insulin intakes [U].
+                       heart_rate (Events) : Heart rate values [BPM].
+                       taud (Events) : Meal carb absorption times [min].
+       
+           """
+    1:     meal_carb: Events = None
+    1:     snack_carb: Events = None
+       
+    1:     sgl2i: Events = None
+    1:     basal_insulin: Events = None
+    1:     bolus_insulin: Events = None
+    1:     bodyweighteffect: Events = None
+       
+    1:     heart_rate: Events = None
+    1:     taud: Events = None
+    1:     running_speed: Events = None
+    1:     running_incline: Events = None
+    1:     cycling_power: Events = None
+    1:     METACSM: Events = None
+    1:     energy_expenditure: Events = None
+       
+    1:     daily_energy_intake: Events = None
+    1:     daily_energy_expenditure: Events = None
+    1:     daily_urinary_glucose_excretion: Events = None
+       
+    1:     def __post_init__(self):
+               # Casts imported dictionaries to Events classes
+   34:         for attribute in self.__slots__:
+   32:             try:
+   32:                 setattr(self, attribute, Events(**getattr(self, attribute)).as_dict())
+   22:             except:
+   22:                 setattr(self, attribute, None)
+                       # print("Loaded inputs lacks: " + attribute + " information.")
+       
+       
+    3: @dataclass(slots=True)
+    2: class input_generation():
+       
+    1:     fraction_cho_intake: list = None
+    1:     fraction_cho_as_snack: list = None
+    1:     net_calorie_balance: list = None
+    1:     daily_energy_intake: list = None
+       
+    1:     meal_duration: list = None
+    1:     snack_duration: list = None
+       
+    1:     breakfast_time_range: list = None
+    1:     lunch_time_range: list = None
+    1:     dinner_time_range: list = None
+       
+    1:     total_carb_range: list = None
+       
+    1:     am_snack_time_range: list = None
+    1:     pm_snack_time_range: list = None
+       
+    1:     sglt2i_dose_magnitude: list = None
+    1:     sglt2i_dose_time_range: list = None
+       
+    1:     breakfast_carb_range: list = None
+    1:     lunch_carb_range: list = None
+    1:     dinner_carb_range: list = None
+       
+    1:     am_snack_carb_range: list = None
+    1:     pm_snack_carb_range: list = None
+       
+    1:     running_start_time: list = None
+    1:     running_duration: list = None
+    1:     running_incline: list = None
+    1:     running_speed: list = None
+    1:     cycling_start_time: list = None
+    1:     cycling_duration: list = None
+    1:     cycling_power: list = None
+       
+       
+    3: @dataclass(slots=True)
+    2: class scenario():
+    1:     """ Stores all the necessary information to uniquely define a simulation.
+       
+                   Mirrors the scenario JSON file.
+       
+                   Note:
+                       Undefined/ not required field are None.
+       
+                   Parameters:
+                       settings (settings) : General, simulator wide settings.
+                       input_generation (input_generation) : Defines parameters for random input generation.
+                       inputs (inputs) : Defines the events (start time, magnitude and duration) of specific inputs.
+                       patient (patient) : Describes the simulated virtual cohort.
+       
+           """
+    1:     settings: settings
+    1:     input_generation: input_generation
+    1:     inputs: inputs
+    1:     patient: patient
+    1:     controller: controller
+       
+    1:     def __post_init__(self):
+    5:         scenario_module = sys.modules[__name__]
+               # Casts imported dictionaries to corresponding dataclasses
+   30:         for attribute in self.__slots__:
+       
+   25:             try:
+   25:                 setattr(self, attribute, getattr(scenario_module, attribute)(**getattr(self, attribute)))
+    4:             except:
+    4:                 setattr(self, attribute, None)
+                       # print("Loaded scenario lacks: " + attribute + " information.")
+       
+       
+    1: def load_scenario(path):
+       
+    8:     with open(path, "r") as f: #
+    4:         loaded_scenario = json.load(f)
+    4:     f.close()
+       
+    4:     scenario_instance = scenario(**loaded_scenario)
+       
+    4:     return scenario_instance
+           
+    1: def save_scenario(path, scenario):
+    8:     with open(path, "w") as f:
+    4:         json.dump(scenario, f, indent=4)

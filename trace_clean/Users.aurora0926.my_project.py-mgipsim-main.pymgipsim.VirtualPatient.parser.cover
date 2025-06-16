@@ -1,0 +1,110 @@
+    1: import argparse
+    1: import os
+    1: from ..Utilities.paths import default_settings_path, models_path
+    1: from ..Utilities.Scenario import load_scenario
+    1: from pymgipsim.VirtualPatient.Models import T1DM
+    1: import glob
+    1: from pymgipsim.Interface.Messages.parser_colors import color_help_text, color_group_header_text
+       
+    1: default_settings = load_scenario(os.path.join(default_settings_path, "scenario_default.json"))
+       
+    1: def get_model_names():
+    1:     paths = glob.glob(os.path.join(models_path, "*", "*", ""))
+   10:     models = [folder for folder in paths if 'T1DM' in folder and '__' not in folder]
+    4:     models = [folder.split(os.sep)[-3:] for folder in models]
+    4:     models = [folder[0] + "." + folder[1] for folder in models]
+    1:     return models
+       
+    1: def generate_virtual_subjects_parser( parent_parser = [], add_help = True):
+       
+    2:     parser = argparse.ArgumentParser(
+    1:                                     prog = 'Virtual Subject Settings',
+    1:                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    1:                                     parents=parent_parser,
+    1:                                     add_help=add_help
+                                           )
+       
+           ######################################################################################
+       
+    1:     model_group = parser.add_argument_group(color_group_header_text('Model and Diabetes Type'))
+       
+           # match mode:
+           #
+           #     case 'singlescale':
+           #         model_names = get_model_names()
+           #
+           #     case 'multiscale':
+           #         model_names = [T2DM.Jauslin.Model.name]
+       
+    2:     model_group.add_argument(
+    1:                         '-mn',
+    1:                         '--model-name',
+    1:                         help = color_help_text('Name of the model that will be used.'),
+    1:                         dest = 'model_name',
+    1:                         default = T1DM.ExtHovorka.Model.name,
+    1:                         choices = get_model_names(),
+                               )
+       
+    2:     model_group.add_argument(
+    1:                         '-pn',
+    1:                         '--patient-names',
+    1:                         help = color_help_text('Names of specific patient file(s) to be used instead of the whole population if desired. By default, all patients are simulated. ' + \
+                                                       'Any number of subjects <= 20 can be used.'),
+    1:                         dest = 'patient_names',
+    1:                         nargs='*'
+                               )
+           
+       
+    1:     subject_traits_group = parser.add_argument_group(title = color_group_header_text('Subject and Traits'))
+       
+       
+    2:     subject_traits_group.add_argument(
+    1:                                     '-rf',
+    1:                                     '--renal_function',
+    1:                                     help=color_help_text('Category of renal function (1-5). Default is 1 (normal function) while 5 is the lowest (kidney failure).'),
+    1:                                     dest='renal_function_category',
+    1:                                     type=int,
+    1:                                     default = default_settings.patient.demographic_info.renal_function_category
+                                           )
+           
+    2:     subject_traits_group.add_argument(
+    1:                                     '-bwr',
+    1:                                     '--body-weight-range',
+    1:                                     help=color_help_text('Range of body weight (in kg) to sample from for virtual subjects.'),
+    1:                                     dest='body_weight_range',
+    1:                                     nargs=2,
+    1:                                     type = int,
+    1:                                     default = default_settings.patient.demographic_info.body_weight_range
+                                           )
+       
+    2:     subject_traits_group.add_argument(
+    1:                                     '-ns',
+    1:                                     '--number_of_subjects',
+    1:                                     help=color_help_text('Number of subjects in simulation. This should be <= 20.'),
+    1:                                     dest='number_of_subjects',
+    1:                                     default=default_settings.patient.number_of_subjects,
+    1:                                     type=int
+                                           )
+       
+    1:     return parser
+       
+       
+    1: def generate_results_parser(parent_parser = [], add_help = True):
+       
+    2:     parser = argparse.ArgumentParser(
+    1:                                 prog = 'Simulation Results Parser',
+    1:                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    1:                                 parents=parent_parser,
+    1:                                 add_help=add_help
+                                       )
+       
+    1:     output_formatting_group = parser.add_argument_group(color_group_header_text('Format Results'))
+       
+    2:     output_formatting_group.add_argument('-xl',
+    1:                                         '--to-excel',
+    1:                                         help = color_help_text('Save the model results in xlsx format. WARNING: Significantly increases run time'),
+    1:                                         action = 'store_true',
+    1:                                         dest = 'to_excel'
+                                               )
+       
+    1:     return parser

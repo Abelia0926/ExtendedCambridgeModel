@@ -1,0 +1,198 @@
+    1: from ctypes import c_int, c_bool, c_void_p, c_uint64
+    1: import enum
+       
+    1: from llvmlite.binding import ffi
+       
+       
+    2: class TypeKind(enum.IntEnum):
+           # The LLVMTypeKind enum from llvm-c/Core.h
+       
+    1:     void = 0
+    1:     half = 1
+    1:     float = 2
+    1:     double = 3
+    1:     x86_fp80 = 4
+    1:     fp128 = 5
+    1:     ppc_fp128 = 6
+    1:     label = 7
+    1:     integer = 8
+    1:     function = 9
+    1:     struct = 10
+    1:     array = 11
+    1:     pointer = 12
+    1:     vector = 13
+    1:     metadata = 14
+    1:     x86_mmx = 15
+    1:     token = 16
+    1:     scalable_vector = 17
+    1:     bfloat = 18
+    1:     x86_amx = 19
+       
+       
+    2: class TypeRef(ffi.ObjectRef):
+    1:     """A weak reference to a LLVM type
+           """
+    2:     @property
+    2:     def name(self):
+               """
+               Get type name
+               """
+               return ffi.ret_string(ffi.lib.LLVMPY_GetTypeName(self))
+       
+    2:     @property
+    2:     def is_struct(self):
+               """
+               Returns true if the type is a struct type.
+               """
+               return ffi.lib.LLVMPY_TypeIsStruct(self)
+       
+    2:     @property
+    2:     def is_pointer(self):
+               """
+               Returns true if the type is a pointer type.
+               """
+               return ffi.lib.LLVMPY_TypeIsPointer(self)
+       
+    2:     @property
+    2:     def is_array(self):
+               """
+               Returns true if the type is an array type.
+               """
+               return ffi.lib.LLVMPY_TypeIsArray(self)
+       
+    2:     @property
+    2:     def is_vector(self):
+               """
+               Returns true if the type is a vector type.
+               """
+               return ffi.lib.LLVMPY_TypeIsVector(self)
+       
+    2:     @property
+    2:     def is_function_vararg(self):
+               """
+               Returns true if a function type accepts a variable number of arguments.
+               When the type is not a function, raises exception.
+               """
+               if self.type_kind != TypeKind.function:
+                   raise ValueError("Type {} is not a function".format(self))
+               return ffi.lib.LLVMPY_IsFunctionVararg(self)
+       
+    2:     @property
+    2:     def elements(self):
+               """
+               Returns iterator over enclosing types
+               """
+               return _TypeListIterator(ffi.lib.LLVMPY_ElementIter(self))
+       
+    2:     @property
+    2:     def element_type(self):
+               """
+               Returns the pointed-to type. When the type is not a pointer,
+               raises exception.
+               """
+               if not self.is_pointer:
+                   raise ValueError("Type {} is not a pointer".format(self))
+               return TypeRef(ffi.lib.LLVMPY_GetElementType(self))
+       
+    2:     @property
+    2:     def element_count(self):
+               """
+               Returns the number of elements in an array or a vector. For scalable
+               vectors, returns minimum number of elements. When the type is neither
+               an array nor a vector, raises exception.
+               """
+               if not self.is_array and not self.is_vector:
+                   raise ValueError("Type {} is not an array nor vector".format(self))
+               return ffi.lib.LLVMPY_GetTypeElementCount(self)
+       
+    2:     @property
+    2:     def type_width(self):
+               """
+               Return the basic size of this type if it is a primitive type. These are
+               fixed by LLVM and are not target-dependent.
+               This will return zero if the type does not have a size or is not a
+               primitive type.
+       
+               If this is a scalable vector type, the scalable property will be set and
+               the runtime size will be a positive integer multiple of the base size.
+       
+               Note that this may not reflect the size of memory allocated for an
+               instance of the type or the number of bytes that are written when an
+               instance of the type is stored to memory.
+               """
+               return ffi.lib.LLVMPY_GetTypeBitWidth(self)
+       
+    2:     @property
+    2:     def type_kind(self):
+               """
+               Returns the LLVMTypeKind enumeration of this type.
+               """
+               return TypeKind(ffi.lib.LLVMPY_GetTypeKind(self))
+       
+    1:     def __str__(self):
+               return ffi.ret_string(ffi.lib.LLVMPY_PrintType(self))
+       
+       
+    2: class _TypeIterator(ffi.ObjectRef):
+       
+    1:     def __next__(self):
+               vp = self._next()
+               if vp:
+                   return TypeRef(vp)
+               else:
+                   raise StopIteration
+       
+    1:     next = __next__
+       
+    1:     def __iter__(self):
+               return self
+       
+       
+    2: class _TypeListIterator(_TypeIterator):
+       
+    1:     def _dispose(self):
+               self._capi.LLVMPY_DisposeElementIter(self)
+       
+    1:     def _next(self):
+               return ffi.lib.LLVMPY_ElementIterNext(self)
+       
+       
+       # FFI
+       
+    1: ffi.lib.LLVMPY_PrintType.argtypes = [ffi.LLVMTypeRef]
+    1: ffi.lib.LLVMPY_PrintType.restype = c_void_p
+       
+    1: ffi.lib.LLVMPY_GetElementType.argtypes = [ffi.LLVMTypeRef]
+    1: ffi.lib.LLVMPY_GetElementType.restype = ffi.LLVMTypeRef
+       
+    1: ffi.lib.LLVMPY_TypeIsPointer.argtypes = [ffi.LLVMTypeRef]
+    1: ffi.lib.LLVMPY_TypeIsPointer.restype = c_bool
+       
+    1: ffi.lib.LLVMPY_TypeIsArray.argtypes = [ffi.LLVMTypeRef]
+    1: ffi.lib.LLVMPY_TypeIsArray.restype = c_bool
+       
+    1: ffi.lib.LLVMPY_TypeIsVector.argtypes = [ffi.LLVMTypeRef]
+    1: ffi.lib.LLVMPY_TypeIsVector.restype = c_bool
+       
+    1: ffi.lib.LLVMPY_TypeIsStruct.argtypes = [ffi.LLVMTypeRef]
+    1: ffi.lib.LLVMPY_TypeIsStruct.restype = c_bool
+       
+    1: ffi.lib.LLVMPY_IsFunctionVararg.argtypes = [ffi.LLVMTypeRef]
+    1: ffi.lib.LLVMPY_IsFunctionVararg.restype = c_bool
+       
+    1: ffi.lib.LLVMPY_GetTypeKind.argtypes = [ffi.LLVMTypeRef]
+    1: ffi.lib.LLVMPY_GetTypeKind.restype = c_int
+       
+    1: ffi.lib.LLVMPY_GetTypeElementCount.argtypes = [ffi.LLVMTypeRef]
+    1: ffi.lib.LLVMPY_GetTypeElementCount.restype = c_int
+       
+    1: ffi.lib.LLVMPY_GetTypeBitWidth.argtypes = [ffi.LLVMTypeRef]
+    1: ffi.lib.LLVMPY_GetTypeBitWidth.restype = c_uint64
+       
+    1: ffi.lib.LLVMPY_ElementIter.argtypes = [ffi.LLVMTypeRef]
+    1: ffi.lib.LLVMPY_ElementIter.restype = ffi.LLVMElementIterator
+       
+    1: ffi.lib.LLVMPY_ElementIterNext.argtypes = [ffi.LLVMElementIterator]
+    1: ffi.lib.LLVMPY_ElementIterNext.restype = ffi.LLVMTypeRef
+       
+    1: ffi.lib.LLVMPY_DisposeElementIter.argtypes = [ffi.LLVMElementIterator]

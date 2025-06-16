@@ -1,0 +1,168 @@
+    1: from abc import ABC, abstractmethod
+    1: from numba.core.registry import DelayedRegistry, CPUDispatcher
+    1: from numba.core.decorators import jit
+    1: from numba.core.errors import InternalTargetMismatchError, NumbaValueError
+    1: from threading import local as tls
+       
+       
+    1: _active_context = tls()
+    1: _active_context_default = 'cpu'
+       
+       
+    2: class _TargetRegistry(DelayedRegistry):
+       
+    1:     def __getitem__(self, item):
+ 4402:         try:
+ 4402:             return super().__getitem__(item)
+               except KeyError:
+                   msg = "No target is registered against '{}', known targets:\n{}"
+                   known = '\n'.join([f"{k: <{10}} -> {v}"
+                                      for k, v in target_registry.items()])
+                   raise NumbaValueError(msg.format(item, known)) from None
+       
+       
+       # Registry mapping target name strings to Target classes
+    1: target_registry = _TargetRegistry()
+       
+       # Registry mapping Target classes the @jit decorator for that target
+    1: jit_registry = DelayedRegistry()
+       
+       
+    2: class target_override(object):
+    1:     """Context manager to temporarily override the current target with that
+              prescribed."""
+    1:     def __init__(self, name):
+               self._orig_target = getattr(_active_context, 'target',
+                                           _active_context_default)
+               self.target = name
+       
+    1:     def __enter__(self):
+               _active_context.target = self.target
+       
+    1:     def __exit__(self, ty, val, tb):
+               _active_context.target = self._orig_target
+       
+       
+    1: def current_target():
+           """Returns the current target
+           """
+  370:     return getattr(_active_context, 'target', _active_context_default)
+       
+       
+    1: def get_local_target(context):
+           """
+           Gets the local target from the call stack if available and the TLS
+           override if not.
+           """
+           # TODO: Should this logic be reversed to prefer TLS override?
+ 1832:     if len(context.callstack._stack) > 0:
+ 1462:         target = context.callstack[0].target
+           else:
+  370:         target = target_registry.get(current_target(), None)
+ 1832:     if target is None:
+               msg = ("The target found is not registered."
+                      "Given target was {}.")
+               raise ValueError(msg.format(target))
+           else:
+ 1832:         return target
+       
+       
+    1: def resolve_target_str(target_str):
+           """Resolves a target specified as a string to its Target class."""
+  318:     return target_registry[target_str]
+       
+       
+    1: def resolve_dispatcher_from_str(target_str):
+           """Returns the dispatcher associated with a target string"""
+   58:     target_hw = resolve_target_str(target_str)
+   58:     return dispatcher_registry[target_hw]
+       
+       
+    1: def _get_local_target_checked(tyctx, hwstr, reason):
+           """Returns the local target if it is compatible with the given target
+           name during a type resolution; otherwise, raises an exception.
+       
+           Parameters
+           ----------
+           tyctx: typing context
+           hwstr: str
+               target name to check against
+           reason: str
+               Reason for the resolution. Expects a noun.
+           Returns
+           -------
+           target_hw : Target
+       
+           Raises
+           ------
+           InternalTargetMismatchError
+           """
+           # Get the class for the target declared by the function
+  260:     hw_clazz = resolve_target_str(hwstr)
+           # get the local target
+  260:     target_hw = get_local_target(tyctx)
+           # make sure the target_hw is in the MRO for hw_clazz else bail
+  260:     if not target_hw.inherits_from(hw_clazz):
+               raise InternalTargetMismatchError(reason, target_hw, hw_clazz)
+  260:     return target_hw
+       
+       
+    2: class JitDecorator(ABC):
+       
+    2:     @abstractmethod
+    2:     def __call__(self):
+               return NotImplemented
+       
+       
+    2: class Target(ABC):
+    1:     """ Implements a target """
+       
+    2:     @classmethod
+    2:     def inherits_from(cls, other):
+               """Returns True if this target inherits from 'other' False otherwise"""
+ 4341:         return issubclass(cls, other)
+       
+       
+    2: class Generic(Target):
+    1:     """Mark the target as generic, i.e. suitable for compilation on
+           any target. All must inherit from this.
+           """
+       
+       
+    2: class CPU(Generic):
+    1:     """Mark the target as CPU.
+           """
+       
+       
+    2: class GPU(Generic):
+    1:     """Mark the target as GPU, i.e. suitable for compilation on a GPU
+           target.
+           """
+       
+       
+    2: class CUDA(GPU):
+    1:     """Mark the target as CUDA.
+           """
+       
+       
+    2: class NPyUfunc(Target):
+    1:     """Mark the target as a ufunc
+           """
+       
+       
+    1: target_registry['generic'] = Generic
+    1: target_registry['CPU'] = CPU
+    1: target_registry['cpu'] = CPU
+    1: target_registry['GPU'] = GPU
+    1: target_registry['gpu'] = GPU
+    1: target_registry['CUDA'] = CUDA
+    1: target_registry['cuda'] = CUDA
+    1: target_registry['npyufunc'] = NPyUfunc
+       
+    1: dispatcher_registry = DelayedRegistry(key_type=Target)
+       
+       
+       # Register the cpu target token with its dispatcher and jit
+    1: cpu_target = target_registry['cpu']
+    1: dispatcher_registry[cpu_target] = CPUDispatcher
+    1: jit_registry[cpu_target] = jit

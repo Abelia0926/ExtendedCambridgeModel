@@ -1,0 +1,23 @@
+    1: import numpy as np
+    1: import json
+    1: from ...Parameters import BaseParameters
+    1: from pymgipsim.Utilities.Scenario import scenario
+    1: from pymgipsim.Utilities.paths import models_path
+    2: class Parameters(BaseParameters):
+       
+    1:     def __init__(self, parameters: np.ndarray = np.array([], dtype=float)):
+    1:         self.as_array = np.empty((1,1),dtype=float)
+    1:         pass
+       
+    2:     @property
+    2:     def as_array(self):
+    1:         return self._as_array
+       
+    2:     @as_array.setter
+    2:     def as_array(self, array: np.ndarray):
+    1:         self._as_array = array
+       
+    2:     @staticmethod
+    2:     def generate(scenario_instance: scenario):
+               return
+       

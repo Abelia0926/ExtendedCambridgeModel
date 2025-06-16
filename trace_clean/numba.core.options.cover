@@ -1,0 +1,110 @@
+    1: """
+       Target Options
+       """
+    1: import operator
+       
+    1: from numba.core import config, utils
+    1: from numba.core.targetconfig import TargetConfig, Option
+       
+       
+    2: class TargetOptions:
+    1:     """Target options maps user options from decorators to the
+           ``numba.core.compiler.Flags`` used by lowering and target context.
+           """
+    2:     class Mapping:
+   33:         def __init__(self, flag_name, apply=lambda x: x):
+   19:             self.flag_name = flag_name
+   19:             self.apply = apply
+       
+    1:     def finalize(self, flags, options):
+               """Subclasses can override this method to make target specific
+               customizations of default flags.
+       
+               Parameters
+               ----------
+               flags : Flags
+               options : dict
+               """
+               pass
+       
+    2:     @classmethod
+    2:     def parse_as_flags(cls, flags, options):
+               """Parse target options defined in ``options`` and set ``flags``
+               accordingly.
+       
+               Parameters
+               ----------
+               flags : Flags
+               options : dict
+               """
+   17:         opt = cls()
+   17:         opt._apply(flags, options)
+   17:         opt.finalize(flags, options)
+   17:         return flags
+       
+    1:     def _apply(self, flags, options):
+               # Find all Mapping instances in the class
+   17:         mappings = {}
+   17:         cls = type(self)
+  850:         for k in dir(cls):
+  833:             v = getattr(cls, k)
+  833:             if isinstance(v, cls.Mapping):
+  306:                 mappings[k] = v
+       
+   17:         used = set()
+  323:         for k, mapping in mappings.items():
+  306:             if k in options:
+   49:                 v = mapping.apply(options[k])
+   49:                 setattr(flags, mapping.flag_name, v)
+   49:                 used.add(k)
+       
+   17:         unused = set(options) - used
+   17:         if unused:
+                   # Unread options?
+                   m = (f"Unrecognized options: {unused}. "
+                        f"Known options are {mappings.keys()}")
+                   raise KeyError(m)
+       
+       
+    1: _mapping = TargetOptions.Mapping
+       
+       
+    2: class DefaultOptions:
+    1:     """Defines how user-level target options are mapped to the target flags.
+           """
+    1:     nopython = _mapping("enable_pyobject", operator.not_)
+    1:     forceobj = _mapping("force_pyobject")
+    1:     looplift = _mapping("enable_looplift")
+    1:     _nrt = _mapping("nrt")
+    1:     debug = _mapping("debuginfo")
+    1:     boundscheck = _mapping("boundscheck")
+    1:     nogil = _mapping("release_gil")
+    1:     writable_args = _mapping("writable_args")
+       
+    1:     no_rewrites = _mapping("no_rewrites")
+    1:     no_cpython_wrapper = _mapping("no_cpython_wrapper")
+    1:     no_cfunc_wrapper = _mapping("no_cfunc_wrapper")
+       
+    1:     parallel = _mapping("auto_parallel")
+    1:     fastmath = _mapping("fastmath")
+    1:     error_model = _mapping("error_model")
+    1:     inline = _mapping("inline")
+    1:     forceinline = _mapping("forceinline")
+       
+    1:     target_backend = _mapping("target_backend")
+       
+    1:     _dbg_extend_lifetimes = _mapping("dbg_extend_lifetimes")
+    1:     _dbg_optnone = _mapping("dbg_optnone")
+       
+       
+    1: def include_default_options(*args):
+           """Returns a mixin class with a subset of the options
+       
+           Parameters
+           ----------
+           *args : str
+               Option names to include.
+           """
+   28:     glbs = {k: getattr(DefaultOptions, k) for k in args}
+       
+    2:     return type("OptionMixins", (), glbs)

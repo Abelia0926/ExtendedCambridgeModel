@@ -1,0 +1,111 @@
+    1: """
+       A module for parsing and generating `fontconfig patterns`_.
+       
+       .. _fontconfig patterns:
+          https://www.freedesktop.org/software/fontconfig/fontconfig-user.html
+       """
+       
+       # This class logically belongs in `matplotlib.font_manager`, but placing it
+       # there would have created cyclical dependency problems, because it also needs
+       # to be available from `matplotlib.rcsetup` (for parsing matplotlibrc files).
+       
+    1: from functools import lru_cache, partial
+    1: import re
+       
+    1: from pyparsing import (
+           Group, Optional, ParseException, Regex, StringEnd, Suppress, ZeroOrMore, oneOf)
+       
+       
+    1: _family_punc = r'\\\-:,'
+    1: _family_unescape = partial(re.compile(r'\\(?=[%s])' % _family_punc).sub, '')
+    1: _family_escape = partial(re.compile(r'(?=[%s])' % _family_punc).sub, r'\\')
+    1: _value_punc = r'\\=_:,'
+    1: _value_unescape = partial(re.compile(r'\\(?=[%s])' % _value_punc).sub, '')
+    1: _value_escape = partial(re.compile(r'(?=[%s])' % _value_punc).sub, r'\\')
+       
+       
+   19: _CONSTANTS = {
+    1:     'thin':           ('weight', 'light'),
+    1:     'extralight':     ('weight', 'light'),
+    1:     'ultralight':     ('weight', 'light'),
+    1:     'light':          ('weight', 'light'),
+    1:     'book':           ('weight', 'book'),
+    1:     'regular':        ('weight', 'regular'),
+    1:     'normal':         ('weight', 'normal'),
+    1:     'medium':         ('weight', 'medium'),
+    1:     'demibold':       ('weight', 'demibold'),
+    1:     'semibold':       ('weight', 'semibold'),
+    1:     'bold':           ('weight', 'bold'),
+    1:     'extrabold':      ('weight', 'extra bold'),
+    1:     'black':          ('weight', 'black'),
+    1:     'heavy':          ('weight', 'heavy'),
+    1:     'roman':          ('slant', 'normal'),
+    1:     'italic':         ('slant', 'italic'),
+    1:     'oblique':        ('slant', 'oblique'),
+    1:     'ultracondensed': ('width', 'ultra-condensed'),
+    1:     'extracondensed': ('width', 'extra-condensed'),
+    1:     'condensed':      ('width', 'condensed'),
+    1:     'semicondensed':  ('width', 'semi-condensed'),
+    1:     'expanded':       ('width', 'expanded'),
+    1:     'extraexpanded':  ('width', 'extra-expanded'),
+    1:     'ultraexpanded':  ('width', 'ultra-expanded'),
+       }
+       
+       
+    2: @lru_cache  # The parser instance is a singleton.
+    2: def _make_fontconfig_parser():
+    1:     def comma_separated(elem):
+    3:         return elem + ZeroOrMore(Suppress(",") + elem)
+       
+    1:     family = Regex(fr"([^{_family_punc}]|(\\[{_family_punc}]))*")
+    1:     size = Regex(r"([0-9]+\.?[0-9]*|\.[0-9]+)")
+    1:     name = Regex(r"[a-z]+")
+    1:     value = Regex(fr"([^{_value_punc}]|(\\[{_value_punc}]))*")
+    1:     prop = Group((name + Suppress("=") + comma_separated(value)) | oneOf(_CONSTANTS))
+    1:     return (
+    4:         Optional(comma_separated(family)("families"))
+    1:         + Optional("-" + comma_separated(size)("sizes"))
+    1:         + ZeroOrMore(":" + prop("properties*"))
+    1:         + StringEnd()
+           )
+       
+       
+       # `parse_fontconfig_pattern` is a bottleneck during the tests because it is
+       # repeatedly called when the rcParams are reset (to validate the default
+       # fonts).  In practice, the cache size doesn't grow beyond a few dozen entries
+       # during the test suite.
+    2: @lru_cache
+    2: def parse_fontconfig_pattern(pattern):
+           """
+           Parse a fontconfig *pattern* into a dict that can initialize a
+           `.font_manager.FontProperties` object.
+           """
+   10:     parser = _make_fontconfig_parser()
+   10:     try:
+   10:         parse = parser.parseString(pattern)
+           except ParseException as err:
+               # explain becomes a plain method on pyparsing 3 (err.explain(0)).
+               raise ValueError("\n" + ParseException.explain(err, 0)) from None
+   10:     parser.resetCache()
+   10:     props = {}
+   10:     if "families" in parse:
+   10:         props["family"] = [*map(_family_unescape, parse["families"])]
+   10:     if "sizes" in parse:
+               props["size"] = [*parse["sizes"]]
+   16:     for prop in parse.get("properties", []):
+    6:         if len(prop) == 1:
+    6:             prop = _CONSTANTS[prop[0]]
+    6:         k, *v = prop
+    6:         props.setdefault(k, []).extend(map(_value_unescape, v))
+   10:     return props
+       
+       
+    1: def generate_fontconfig_pattern(d):
+           """Convert a `.FontProperties` to a fontconfig pattern string."""
+           kvs = [(k, getattr(d, f"get_{k}")())
+                  for k in ["style", "variant", "weight", "stretch", "file", "size"]]
+           # Families is given first without a leading keyword.  Other entries (which
+           # are necessarily scalar) are given as key=value, skipping Nones.
+           return (",".join(_family_escape(f) for f in d.get_family())
+                   + "".join(f":{k}={_value_escape(str(v))}"
+                             for k, v in kvs if v is not None))

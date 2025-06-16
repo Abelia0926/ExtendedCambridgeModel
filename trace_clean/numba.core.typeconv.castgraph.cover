@@ -1,0 +1,133 @@
+    1: from collections import defaultdict
+    1: from functools import total_ordering
+    1: import enum
+       
+       
+    2: class Conversion(enum.IntEnum):
+    1:     """
+           A conversion kind from one type to the other.  The enum members
+           are ordered from stricter to looser.
+           """
+           # The two types are identical
+    1:     exact = 1
+           # The two types are of the same kind, the destination type has more
+           # extension or precision than the source type (e.g. float32 -> float64,
+           # or int32 -> int64)
+    1:     promote = 2
+           # The source type can be converted to the destination type without loss
+           # of information (e.g. int32 -> int64).  Note that the conversion may
+           # still fail explicitly at runtime (e.g. Optional(int32) -> int32)
+    1:     safe = 3
+           # The conversion may appear to succeed at runtime while losing information
+           # or precision (e.g. int32 -> uint32, float64 -> float32, int64 -> int32,
+           # etc.)
+    1:     unsafe = 4
+       
+           # This value is only used internally
+    1:     nil = 99
+       
+       
+    2: class CastSet(object):
+    1:     """A set of casting rules.
+       
+           There is at most one rule per target type.
+           """
+       
+    1:     def __init__(self):
+   15:         self._rels = {}
+       
+    1:     def insert(self, to, rel):
+ 2911:         old = self.get(to)
+ 2911:         setrel = min(rel, old)
+ 2911:         self._rels[to] = setrel
+ 2911:         return old != setrel
+       
+    1:     def items(self):
+               return self._rels.items()
+       
+    1:     def get(self, item):
+ 2911:         return self._rels.get(item, Conversion.nil)
+       
+    1:     def __len__(self):
+               return len(self._rels)
+       
+    1:     def __repr__(self):
+               body = ["{rel}({ty})".format(rel=rel, ty=ty)
+                       for ty, rel in self._rels.items()]
+               return "{" + ', '.join(body) + "}"
+       
+    1:     def __contains__(self, item):
+               return item in self._rels
+       
+    1:     def __iter__(self):
+   46:         return iter(self._rels.keys())
+       
+    1:     def __getitem__(self, item):
+ 2927:         return self._rels[item]
+       
+       
+    2: class TypeGraph(object):
+    1:     """A graph that maintains the casting relationship of all types.
+       
+           This simplifies the definition of casting rules by automatically
+           propagating the rules.
+           """
+       
+    1:     def __init__(self, callback=None):
+               """
+               Args
+               ----
+               - callback: callable or None
+                   It is called for each new casting rule with
+                   (from_type, to_type, castrel).
+               """
+    1:         assert callback is None or callable(callback)
+    1:         self._forwards = defaultdict(CastSet)
+    1:         self._backwards = defaultdict(set)
+    1:         self._callback = callback
+       
+    1:     def get(self, ty):
+               return self._forwards[ty]
+       
+    1:     def propagate(self, a, b, baserel):
+   46:         backset = self._backwards[a]
+       
+               # Forward propagate the relationship to all nodes that b leads to
+  307:         for child in self._forwards[b]:
+  261:             rel = max(baserel, self._forwards[b][child])
+  261:             if a != child:
+  230:                 if self._forwards[a].insert(child, rel):
+   71:                     self._callback(a, child, rel)
+  230:                 self._backwards[child].add(a)
+       
+                   # Propagate the relationship from nodes that connects to a
+ 2784:             for backnode in backset:
+ 2523:                 if backnode != child:
+ 2295:                     backrel = max(rel, self._forwards[backnode][a])
+ 2295:                     if self._forwards[backnode].insert(child, backrel):
+                               self._callback(backnode, child, backrel)
+ 2295:                     self._backwards[child].add(backnode)
+       
+               # Every node that leads to a connects to b
+  417:         for child in self._backwards[a]:
+  371:             rel = max(baserel, self._forwards[child][a])
+  371:             if b != child:
+  340:                 if self._forwards[child].insert(b, rel):
+   90:                     self._callback(child, b, rel)
+  340:                 self._backwards[b].add(child)
+       
+    1:     def insert_rule(self, a, b, rel):
+   46:         self._forwards[a].insert(b, rel)
+   46:         self._callback(a, b, rel)
+   46:         self._backwards[b].add(a)
+   46:         self.propagate(a, b, rel)
+       
+    1:     def promote(self, a, b):
+    9:         self.insert_rule(a, b, Conversion.promote)
+       
+    1:     def safe(self, a, b):
+   12:         self.insert_rule(a, b, Conversion.safe)
+       
+    1:     def unsafe(self, a, b):
+   25:         self.insert_rule(a, b, Conversion.unsafe)
+       

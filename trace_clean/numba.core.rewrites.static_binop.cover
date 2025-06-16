@@ -1,0 +1,35 @@
+    1: from numba.core import errors, ir
+    1: from numba.core.rewrites import register_rewrite, Rewrite
+       
+       
+    3: @register_rewrite('before-inference')
+    2: class DetectStaticBinops(Rewrite):
+    1:     """
+           Detect constant arguments to select binops.
+           """
+       
+           # Those operators can benefit from a constant-inferred argument
+    1:     rhs_operators = {'**'}
+       
+    1:     def match(self, func_ir, block, typemap, calltypes):
+   95:         self.static_lhs = {}
+   95:         self.static_rhs = {}
+   95:         self.block = block
+               # Find binop expressions with a constant lhs or rhs
+  146:         for expr in block.find_exprs(op='binop'):
+   51:             try:
+   51:                 if (expr.fn in self.rhs_operators
+                           and expr.static_rhs is ir.UNDEFINED):
+                           self.static_rhs[expr] = func_ir.infer_constant(expr.rhs)
+                   except errors.ConstantInferenceError:
+                       continue
+       
+   95:         return len(self.static_lhs) > 0 or len(self.static_rhs) > 0
+       
+    1:     def apply(self):
+               """
+               Store constant arguments that were detected in match().
+               """
+               for expr, rhs in self.static_rhs.items():
+                   expr.static_rhs = rhs
+               return self.block

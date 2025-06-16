@@ -1,0 +1,299 @@
+    1: """
+       Implementation of the range object for fixed-size integers.
+       """
+       
+    1: import operator
+       
+    1: from numba import prange
+    1: from numba.core import types, cgutils, errors
+    1: from numba.cpython.listobj import ListIterInstance
+    1: from numba.np.arrayobj import make_array
+    1: from numba.core.imputils import (lower_builtin, lower_cast,
+                                           iterator_impl, impl_ret_untracked)
+    1: from numba.core.typing import signature
+    1: from numba.core.extending import intrinsic, overload, overload_attribute, register_jitable
+    1: from numba.parfors.parfor import internal_prange
+       
+    1: def make_range_iterator(typ):
+           """
+           Return the Structure representation of the given *typ* (an
+           instance of types.RangeIteratorType).
+           """
+    3:     return cgutils.create_struct_proxy(typ)
+       
+       
+    1: def make_range_impl(int_type, range_state_type, range_iter_type):
+    3:     RangeState = cgutils.create_struct_proxy(range_state_type)
+       
+    6:     @lower_builtin(range, int_type)
+    6:     @lower_builtin(prange, int_type)
+    6:     @lower_builtin(internal_prange, int_type)
+    6:     def range1_impl(context, builder, sig, args):
+               """
+               range(stop: int) -> range object
+               """
+    5:         [stop] = args
+    5:         state = RangeState(context, builder)
+    5:         state.start = context.get_constant(int_type, 0)
+    5:         state.stop = stop
+    5:         state.step = context.get_constant(int_type, 1)
+   10:         return impl_ret_untracked(context,
+    5:                                   builder,
+    5:                                   range_state_type,
+    5:                                   state._getvalue())
+       
+    6:     @lower_builtin(range, int_type, int_type)
+    6:     @lower_builtin(prange, int_type, int_type)
+    6:     @lower_builtin(internal_prange, int_type, int_type)
+    6:     def range2_impl(context, builder, sig, args):
+               """
+               range(start: int, stop: int) -> range object
+               """
+               start, stop = args
+               state = RangeState(context, builder)
+               state.start = start
+               state.stop = stop
+               state.step = context.get_constant(int_type, 1)
+               return impl_ret_untracked(context,
+                                         builder,
+                                         range_state_type,
+                                         state._getvalue())
+       
+    6:     @lower_builtin(range, int_type, int_type, int_type)
+    6:     @lower_builtin(prange, int_type, int_type, int_type)
+    6:     @lower_builtin(internal_prange, int_type, int_type, int_type)
+    6:     def range3_impl(context, builder, sig, args):
+               """
+               range(start: int, stop: int, step: int) -> range object
+               """
+               [start, stop, step] = args
+               state = RangeState(context, builder)
+               state.start = start
+               state.stop = stop
+               state.step = step
+               return impl_ret_untracked(context,
+                                         builder,
+                                         range_state_type,
+                                         state._getvalue())
+       
+    6:     @lower_builtin(len, range_state_type)
+    6:     def range_len(context, builder, sig, args):
+               """
+               len(range)
+               """
+               (value,) = args
+               state = RangeState(context, builder, value)
+               res = RangeIter.from_range_state(context, builder, state)
+               return impl_ret_untracked(context, builder, int_type, builder.load(res.count))
+       
+    6:     @lower_builtin('getiter', range_state_type)
+    6:     def getiter_range32_impl(context, builder, sig, args):
+               """
+               range.__iter__
+               """
+    5:         (value,) = args
+    5:         state = RangeState(context, builder, value)
+    5:         res = RangeIter.from_range_state(context, builder, state)._getvalue()
+    5:         return impl_ret_untracked(context, builder, range_iter_type, res)
+       
+    9:     @iterator_impl(range_state_type, range_iter_type)
+    6:     class RangeIter(make_range_iterator(range_iter_type)):
+       
+    6:         @classmethod
+    6:         def from_range_state(cls, context, builder, state):
+                   """
+                   Create a RangeIter initialized from the given RangeState *state*.
+                   """
+    5:             self = cls(context, builder)
+    5:             start = state.start
+    5:             stop = state.stop
+    5:             step = state.step
+       
+    5:             startptr = cgutils.alloca_once(builder, start.type)
+    5:             builder.store(start, startptr)
+       
+    5:             countptr = cgutils.alloca_once(builder, start.type)
+       
+    5:             self.iter = startptr
+    5:             self.stop = stop
+    5:             self.step = step
+    5:             self.count = countptr
+       
+    5:             diff = builder.sub(stop, start)
+    5:             zero = context.get_constant(int_type, 0)
+    5:             one = context.get_constant(int_type, 1)
+    5:             pos_diff = builder.icmp_signed('>', diff, zero)
+    5:             pos_step = builder.icmp_signed('>', step, zero)
+    5:             sign_differs = builder.xor(pos_diff, pos_step)
+    5:             zero_step = builder.icmp_unsigned('==', step, zero)
+       
+   10:             with cgutils.if_unlikely(builder, zero_step):
+                       # step shouldn't be zero
+   10:                 context.call_conv.return_user_exc(builder, ValueError,
+    5:                                                   ("range() arg 3 must not be zero",))
+       
+   10:             with builder.if_else(sign_differs) as (then, orelse):
+   10:                 with then:
+    5:                     builder.store(zero, self.count)
+       
+   10:                 with orelse:
+    5:                     rem = builder.srem(diff, step)
+    5:                     rem = builder.select(pos_diff, rem, builder.neg(rem))
+    5:                     uneven = builder.icmp_signed('>', rem, zero)
+   10:                     newcount = builder.add(builder.sdiv(diff, step),
+    5:                                            builder.select(uneven, one, zero))
+    5:                     builder.store(newcount, self.count)
+       
+    5:             return self
+       
+    3:         def iternext(self, context, builder, result):
+    5:             zero = context.get_constant(int_type, 0)
+    5:             countptr = self.count
+    5:             count = builder.load(countptr)
+    5:             is_valid = builder.icmp_signed('>', count, zero)
+    5:             result.set_valid(is_valid)
+       
+   10:             with builder.if_then(is_valid):
+    5:                 value = builder.load(self.iter)
+    5:                 result.yield_(value)
+    5:                 one = context.get_constant(int_type, 1)
+       
+    5:                 builder.store(builder.sub(count, one, flags=["nsw"]), countptr)
+    5:                 builder.store(builder.add(value, self.step), self.iter)
+       
+       
+    1: range_impl_map = {
+    1:     types.int32 : (types.range_state32_type, types.range_iter32_type),
+    1:     types.int64 : (types.range_state64_type, types.range_iter64_type),
+    1:     types.uint64 : (types.unsigned_range_state64_type, types.unsigned_range_iter64_type)
+       }
+       
+    4: for int_type, state_types in range_impl_map.items():
+    3:     make_range_impl(int_type, *state_types)
+       
+    2: @lower_cast(types.RangeType, types.RangeType)
+    2: def range_to_range(context, builder, fromty, toty, val):
+           olditems = cgutils.unpack_tuple(builder, val, 3)
+           items = [context.cast(builder, v, fromty.dtype, toty.dtype)
+                    for v in olditems]
+           return cgutils.make_anonymous_struct(builder, items)
+       
+    2: @intrinsic
+    2: def length_of_iterator(typingctx, val):
+           """
+           An implementation of len(iter) for internal use.
+           Primary use is for array comprehensions (see inline_closurecall).
+           """
+           if isinstance(val, types.RangeIteratorType):
+               val_type = val.yield_type
+               def codegen(context, builder, sig, args):
+                   (value,) = args
+                   iter_type = range_impl_map[val_type][1]
+                   iterobj = cgutils.create_struct_proxy(iter_type)(context, builder, value)
+                   int_type = iterobj.count.type
+                   return impl_ret_untracked(context, builder, int_type, builder.load(iterobj.count))
+               return signature(val_type, val), codegen
+           elif isinstance(val, types.ListIter):
+               def codegen(context, builder, sig, args):
+                   (value,) = args
+                   intp_t = context.get_value_type(types.intp)
+                   iterobj = ListIterInstance(context, builder, sig.args[0], value)
+                   return impl_ret_untracked(context, builder, intp_t, iterobj.size)
+               return signature(types.intp, val), codegen
+           elif isinstance(val, types.ArrayIterator):
+               def  codegen(context, builder, sig, args):
+                   (iterty,) = sig.args
+                   (value,) = args
+                   intp_t = context.get_value_type(types.intp)
+                   iterobj = context.make_helper(builder, iterty, value=value)
+                   arrayty = iterty.array_type
+                   ary = make_array(arrayty)(context, builder, value=iterobj.array)
+                   shape = cgutils.unpack_tuple(builder, ary.shape)
+                   # array iterates along the outer dimension
+                   return impl_ret_untracked(context, builder, intp_t, shape[0])
+               return signature(types.intp, val), codegen
+           elif isinstance(val, types.UniTupleIter):
+               def codegen(context, builder, sig, args):
+                   (iterty,) = sig.args
+                   tuplety = iterty.container
+                   intp_t = context.get_value_type(types.intp)
+                   count_const = intp_t(tuplety.count)
+                   return impl_ret_untracked(context, builder, intp_t, count_const)
+       
+               return signature(types.intp, val), codegen
+           elif isinstance(val, types.ListTypeIteratorType):
+               def codegen(context, builder, sig, args):
+                   (value,) = args
+                   intp_t = context.get_value_type(types.intp)
+                   from numba.typed.listobject import ListIterInstance
+                   iterobj = ListIterInstance(context, builder, sig.args[0], value)
+                   return impl_ret_untracked(context, builder, intp_t, iterobj.size)
+               return signature(types.intp, val), codegen
+           else:
+               msg = ('Unsupported iterator found in array comprehension, try '
+                      'preallocating the array and filling manually.')
+               raise errors.TypingError(msg)
+       
+    1: def make_range_attr(index, attribute):
+    6:     @intrinsic
+    6:     def rangetype_attr_getter(typingctx, a):
+               if isinstance(a, types.RangeType):
+                   def codegen(context, builder, sig, args):
+                       (val,) = args
+                       items = cgutils.unpack_tuple(builder, val, 3)
+                       return impl_ret_untracked(context, builder, sig.return_type,
+                                                 items[index])
+                   return signature(a.dtype, a), codegen
+       
+    6:     @overload_attribute(types.RangeType, attribute)
+    6:     def range_attr(rnge):
+               def get(rnge):
+                   return rangetype_attr_getter(rnge)
+               return get
+       
+       
+    2: @register_jitable
+    2: def impl_contains_helper(robj, val):
+           if robj.step > 0 and (val < robj.start or val >= robj.stop):
+               return False
+           elif robj.step < 0 and (val <= robj.stop or val > robj.start):
+               return False
+       
+           return ((val - robj.start) % robj.step) == 0
+       
+       
+    2: @overload(operator.contains)
+    2: def impl_contains(robj, val):
+           def impl_false(robj, val):
+               return False
+       
+           if not isinstance(robj, types.RangeType):
+               return
+       
+           elif isinstance(val, (types.Integer, types.Boolean)):
+               return impl_contains_helper
+       
+           elif isinstance(val, types.Float):
+               def impl(robj, val):
+                   if val % 1 != 0:
+                       return False
+                   else:
+                       return impl_contains_helper(robj, int(val))
+               return impl
+       
+           elif isinstance(val, types.Complex):
+               def impl(robj, val):
+                   if val.imag != 0:
+                       return False
+                   elif val.real % 1 != 0:
+                       return False
+                   else:
+                       return impl_contains_helper(robj, int(val.real))
+               return impl
+       
+           elif not isinstance(val, types.Number):
+               return impl_false
+       
+       
+    4: for ix, attr in enumerate(('start', 'stop', 'step')):
+    3:     make_range_attr(index=ix, attribute=attr)

@@ -1,0 +1,108 @@
+       # -*- coding: utf-8 -*-
+    1: """
+       Created on Sat May 12
+       
+       @author: Andy
+       """
+    1: import numpy as np
+    1: import os, json, tqdm, glob
+    1: from pymgipsim.Utilities.paths import default_settings_path, results_path, simulator_path
+    1: from pymgipsim.Utilities.units_conversions_constants import DEFAULT_RANDOM_SEED
+    1: from pymgipsim.VirtualPatient.VirtualPatient import VirtualCohort
+    1: from pymgipsim.Utilities.Scenario import scenario, save_scenario
+    1: from pymgipsim.Utilities import simulation_folder
+    1: from pymgipsim.VirtualPatient.Models import T1DM, Multiscale
+    1: from pymgipsim.VirtualPatient.parser import generate_virtual_subjects_parser
+    1: from pymgipsim.Settings.parser import generate_settings_parser
+       
+    1: from pymgipsim.generate_settings import generate_simulation_settings_main
+    1: from pymgipsim.Utilities.simulation_folder import get_most_recent_folder_in_directory
+    1: import argparse, json, pprint
+    1: from dataclasses import asdict
+       
+    1: np.random.seed(DEFAULT_RANDOM_SEED)
+       
+    1: def list_model_patients(model_name: str):
+           path = os.path.join(simulator_path, "VirtualPatient", "Models", model_name.replace(".", "/"), "Patients", "*.json")
+           files = []
+           for filename in glob.iglob(path):
+               files.append(os.path.split(filename)[-1])
+       
+           return files
+       
+       
+    1: def generate_patient_names(scenario_instance: scenario, args: argparse.Namespace):
+    1:     try:
+    1:         if scenario_instance.patient.files is None:
+                   all_files = list_model_patients(scenario_instance.patient.model.name)
+                   np.random.seed(DEFAULT_RANDOM_SEED)
+                   patient_indeces = np.random.choice(len(all_files), size=(scenario_instance.patient.number_of_subjects,), replace=False)
+                   cohort_paths = [all_files[i] for i in patient_indeces]
+                   scenario_instance.patient.files = cohort_paths
+               else:
+    1:             scenario_instance.patient.number_of_subjects = len(scenario_instance.patient.files)
+    1:             args.number_of_subjects = scenario_instance.patient.number_of_subjects
+    3:         scenario_instance.patient.files = [file if ".json" in file else file + ".json" for file in scenario_instance.patient.files]
+    1:         print("")
+           except:
+               scenario_instance.patient.files = None
+       
+       
+    1: def generate_virtual_subjects_main(scenario_instance: scenario, args: argparse.Namespace, results_folder_path: str):
+       
+    1:     if not args.no_print:
+    1:         print(f">>>>> Generating Virtual Cohort")
+       
+    1:     results_folder_path = get_most_recent_folder_in_directory(results_path)
+       
+    1:     scenario_instance.patient.model.name = args.model_name
+    1:     scenario_instance.patient.files = args.patient_names
+    1:     scenario_instance.patient.number_of_subjects = args.number_of_subjects
+       
+    1:     scenario_instance.patient.demographic_info.renal_function_category = args.renal_function_category
+    1:     scenario_instance.patient.demographic_info.body_weight_range = args.body_weight_range
+       
+    1:     generate_patient_names(scenario_instance, args)
+       
+    1:     """ Load/generate demographic and multiscale info """
+    1:     scenario_instance = VirtualCohort.generate_demographic_info(scenario_instance)
+       
+    1:     """ Generate virtual parameters """
+       
+    1:     match scenario_instance.patient.model.name:
+    1:         case T1DM.IVP.Model.name:
+                   parameters = T1DM.IVP.Parameters.generate(scenario_instance)
+    1:         case T1DM.ExtHovorka.Model.name:
+    1:             parameters = T1DM.ExtHovorka.Parameters.generate(scenario_instance)
+       
+    1:     scenario_instance.patient.model.parameters = parameters.tolist()
+       
+    1:     parameters = Multiscale.BodyWeight.Parameters.generate(scenario_instance)
+    1:     scenario_instance.patient.mscale.parameters = parameters.tolist()
+       
+    1:     save_scenario(os.path.join(results_folder_path, "simulation_settings.json"), asdict(scenario_instance))
+       
+    1:     return scenario_instance
+       
+       
+    1: if __name__ == '__main__':
+       
+       
+           with open(os.path.join(default_settings_path, "scenario_default.json"), "r") as f: #
+               default_scenario = scenario(**json.load(f))
+           f.close()
+       
+           """ Define Results Path """
+           _, _, _, results_folder_path = simulation_folder.create_simulation_results_folder(results_path)
+       
+       
+           """ Parse Arguments  """
+           parser = generate_virtual_subjects_parser(parent_parser=[generate_settings_parser(add_help = False)])
+           args = parser.parse_args()
+       
+           settings_file = generate_simulation_settings_main(scenario_instance=default_scenario, args=args, results_folder_path = results_folder_path)
+       
+           settings_file = generate_virtual_subjects_main(scenario_instance = settings_file, args=args, results_folder_path = results_folder_path)
+       
+           if args.verbose:
+               pprint.PrettyPrinter(indent=2).pprint(settings_file)

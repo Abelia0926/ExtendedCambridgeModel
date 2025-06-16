@@ -1,0 +1,18 @@
+    1: import functools
+    1: from .manager import DataModelManager
+       
+       
+    1: def register(dmm, typecls):
+           """Used as decorator to simplify datamodel registration.
+           Returns the object being decorated so that chaining is possible.
+           """
+  107:     def wraps(fn):
+  107:         dmm.register(typecls, fn)
+  107:         return fn
+       
+  107:     return wraps
+       
+       
+    1: default_manager = DataModelManager()
+       
+    1: register_default = functools.partial(register, default_manager)

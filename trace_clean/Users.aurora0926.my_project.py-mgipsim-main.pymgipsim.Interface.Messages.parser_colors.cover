@@ -1,0 +1,22 @@
+    1: import colorama
+       
+       
+    1: def color_help_text(prompt):
+   47:         return colorama.Fore.CYAN + prompt + colorama.Fore.WHITE + colorama.Style.RESET_ALL
+       
+    1: def color_command_text(prompt):
+    4:         return colorama.Style.BRIGHT + colorama.Fore.RED + prompt + colorama.Fore.WHITE + colorama.Style.RESET_ALL
+               
+    1: def color_group_header_text(prompt):
+   13:         return colorama.Style.BRIGHT + colorama.Fore.CYAN + prompt + colorama.Fore.WHITE + colorama.Style.RESET_ALL
+       
+    1: def color_error_warning_text(prompt):
+               return colorama.Style.BRIGHT + colorama.Fore.RED + prompt + colorama.Fore.WHITE + colorama.Style.RESET_ALL
+       
+    1: def color_modified_text(prompt):
+               return colorama.Style.BRIGHT + colorama.Fore.CYAN + prompt + colorama.Style.RESET_ALL
+       
+    1: def color_pymgipsim_logo():
+    1:         return colorama.Style.BRIGHT + colorama.Fore.RED+'**'+ colorama.Fore.CYAN + 'PYmGIPsim' + colorama.Style.RESET_ALL
+       
+       

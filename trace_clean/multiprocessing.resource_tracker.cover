@@ -1,0 +1,239 @@
+       ###############################################################################
+       # Server process to keep track of unlinked resources (like shared memory
+       # segments, semaphores etc.) and clean them.
+       #
+       # On Unix we run a server process which keeps track of unlinked
+       # resources. The server ignores SIGINT and SIGTERM and reads from a
+       # pipe.  Every other process of the program has a copy of the writable
+       # end of the pipe, so we get EOF when all other processes have exited.
+       # Then the server process unlinks any remaining resource names.
+       #
+       # This is important because there may be system limits for such resources: for
+       # instance, the system only supports a limited number of named semaphores, and
+       # shared-memory segments live in the RAM. If a python process leaks such a
+       # resource, this resource will not be removed till the next reboot.  Without
+       # this resource tracker process, "killall python" would probably leave unlinked
+       # resources.
+       
+    1: import os
+    1: import signal
+    1: import sys
+    1: import threading
+    1: import warnings
+       
+    1: from . import spawn
+    1: from . import util
+       
+    1: __all__ = ['ensure_running', 'register', 'unregister']
+       
+    1: _HAVE_SIGMASK = hasattr(signal, 'pthread_sigmask')
+    1: _IGNORED_SIGNALS = (signal.SIGINT, signal.SIGTERM)
+       
+    1: _CLEANUP_FUNCS = {
+    1:     'noop': lambda: None,
+       }
+       
+    1: if os.name == 'posix':
+    1:     import _multiprocessing
+    1:     import _posixshmem
+       
+           # Use sem_unlink() to clean up named semaphores.
+           #
+           # sem_unlink() may be missing if the Python build process detected the
+           # absence of POSIX named semaphores. In that case, no named semaphores were
+           # ever opened, so no cleanup would be necessary.
+    1:     if hasattr(_multiprocessing, 'sem_unlink'):
+    2:         _CLEANUP_FUNCS.update({
+    1:             'semaphore': _multiprocessing.sem_unlink,
+               })
+    2:     _CLEANUP_FUNCS.update({
+    1:         'shared_memory': _posixshmem.shm_unlink,
+           })
+       
+       
+    2: class ResourceTracker(object):
+       
+    1:     def __init__(self):
+    1:         self._lock = threading.Lock()
+    1:         self._fd = None
+    1:         self._pid = None
+       
+    1:     def _stop(self):
+               with self._lock:
+                   if self._fd is None:
+                       # not running
+                       return
+       
+                   # closing the "alive" file descriptor stops main()
+                   os.close(self._fd)
+                   self._fd = None
+       
+                   os.waitpid(self._pid, 0)
+                   self._pid = None
+       
+    1:     def getfd(self):
+               self.ensure_running()
+               return self._fd
+       
+    1:     def ensure_running(self):
+               '''Make sure that resource tracker process is running.
+       
+               This can be run from any process.  Usually a child process will use
+               the resource created by its parent.'''
+    2:         with self._lock:
+    1:             if self._fd is not None:
+                       # resource tracker was launched before, is it still running?
+                       if self._check_alive():
+                           # => still alive
+                           return
+                       # => dead, launch it again
+                       os.close(self._fd)
+       
+                       # Clean-up to avoid dangling processes.
+                       try:
+                           # _pid can be None if this process is a child from another
+                           # python process, which has started the resource_tracker.
+                           if self._pid is not None:
+                               os.waitpid(self._pid, 0)
+                       except ChildProcessError:
+                           # The resource_tracker has already been terminated.
+                           pass
+                       self._fd = None
+                       self._pid = None
+       
+                       warnings.warn('resource_tracker: process died unexpectedly, '
+                                     'relaunching.  Some resources might leak.')
+       
+    1:             fds_to_pass = []
+    1:             try:
+    1:                 fds_to_pass.append(sys.stderr.fileno())
+                   except Exception:
+                       pass
+    1:             cmd = 'from multiprocessing.resource_tracker import main;main(%d)'
+    1:             r, w = os.pipe()
+    1:             try:
+    1:                 fds_to_pass.append(r)
+                       # process will out live us, so no need to wait on pid
+    1:                 exe = spawn.get_executable()
+    1:                 args = [exe] + util._args_from_interpreter_flags()
+    1:                 args += ['-c', cmd % r]
+                       # bpo-33613: Register a signal mask that will block the signals.
+                       # This signal mask will be inherited by the child that is going
+                       # to be spawned and will protect the child from a race condition
+                       # that can make the child die before it registers signal handlers
+                       # for SIGINT and SIGTERM. The mask is unregistered after spawning
+                       # the child.
+    1:                 try:
+    1:                     if _HAVE_SIGMASK:
+    1:                         signal.pthread_sigmask(signal.SIG_BLOCK, _IGNORED_SIGNALS)
+    1:                     pid = util.spawnv_passfds(exe, args, fds_to_pass)
+                       finally:
+    1:                     if _HAVE_SIGMASK:
+    1:                         signal.pthread_sigmask(signal.SIG_UNBLOCK, _IGNORED_SIGNALS)
+                   except:
+                       os.close(w)
+                       raise
+                   else:
+    1:                 self._fd = w
+    1:                 self._pid = pid
+                   finally:
+    1:                 os.close(r)
+       
+    1:     def _check_alive(self):
+               '''Check that the pipe has not been closed by sending a probe.'''
+               try:
+                   # We cannot use send here as it calls ensure_running, creating
+                   # a cycle.
+                   os.write(self._fd, b'PROBE:0:noop\n')
+               except OSError:
+                   return False
+               else:
+                   return True
+       
+    1:     def register(self, name, rtype):
+               '''Register name of resource with resource tracker.'''
+    1:         self._send('REGISTER', name, rtype)
+       
+    1:     def unregister(self, name, rtype):
+               '''Unregister name of resource with resource tracker.'''
+               self._send('UNREGISTER', name, rtype)
+       
+    1:     def _send(self, cmd, name, rtype):
+    1:         self.ensure_running()
+    1:         msg = '{0}:{1}:{2}\n'.format(cmd, name, rtype).encode('ascii')
+    1:         if len(msg) > 512:
+                   # posix guarantees that writes to a pipe of less than PIPE_BUF
+                   # bytes are atomic, and that PIPE_BUF >= 512
+                   raise ValueError('msg too long')
+    1:         nbytes = os.write(self._fd, msg)
+    1:         assert nbytes == len(msg), "nbytes {0:n} but len(msg) {1:n}".format(
+                   nbytes, len(msg))
+       
+       
+    1: _resource_tracker = ResourceTracker()
+    1: ensure_running = _resource_tracker.ensure_running
+    1: register = _resource_tracker.register
+    1: unregister = _resource_tracker.unregister
+    1: getfd = _resource_tracker.getfd
+       
+    1: def main(fd):
+           '''Run resource tracker.'''
+           # protect the process from ^C and "killall python" etc
+           signal.signal(signal.SIGINT, signal.SIG_IGN)
+           signal.signal(signal.SIGTERM, signal.SIG_IGN)
+           if _HAVE_SIGMASK:
+               signal.pthread_sigmask(signal.SIG_UNBLOCK, _IGNORED_SIGNALS)
+       
+           for f in (sys.stdin, sys.stdout):
+               try:
+                   f.close()
+               except Exception:
+                   pass
+       
+           cache = {rtype: set() for rtype in _CLEANUP_FUNCS.keys()}
+           try:
+               # keep track of registered/unregistered resources
+               with open(fd, 'rb') as f:
+                   for line in f:
+                       try:
+                           cmd, name, rtype = line.strip().decode('ascii').split(':')
+                           cleanup_func = _CLEANUP_FUNCS.get(rtype, None)
+                           if cleanup_func is None:
+                               raise ValueError(
+                                   f'Cannot register {name} for automatic cleanup: '
+                                   f'unknown resource type {rtype}')
+       
+                           if cmd == 'REGISTER':
+                               cache[rtype].add(name)
+                           elif cmd == 'UNREGISTER':
+                               cache[rtype].remove(name)
+                           elif cmd == 'PROBE':
+                               pass
+                           else:
+                               raise RuntimeError('unrecognized command %r' % cmd)
+                       except Exception:
+                           try:
+                               sys.excepthook(*sys.exc_info())
+                           except:
+                               pass
+           finally:
+               # all processes have terminated; cleanup any remaining resources
+               for rtype, rtype_cache in cache.items():
+                   if rtype_cache:
+                       try:
+                           warnings.warn('resource_tracker: There appear to be %d '
+                                         'leaked %s objects to clean up at shutdown' %
+                                         (len(rtype_cache), rtype))
+                       except Exception:
+                           pass
+                   for name in rtype_cache:
+                       # For some reason the process which created and registered this
+                       # resource has failed to unregister it. Presumably it has
+                       # died.  We therefore unlink it.
+                       try:
+                           try:
+                               _CLEANUP_FUNCS[rtype](name)
+                           except Exception as e:
+                               warnings.warn('resource_tracker: %r: %s' % (name, e))
+                       finally:
+                           pass

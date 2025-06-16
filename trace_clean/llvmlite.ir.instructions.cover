@@ -1,0 +1,893 @@
+    1: """
+       Implementation of LLVM IR instructions.
+       """
+       
+    1: from llvmlite.ir import types
+    1: from llvmlite.ir.values import (Block, Function, Value, NamedValue, Constant,
+                                       MetaDataArgument, MetaDataString, AttributeSet,
+                                       Undefined, ArgumentAttributes)
+    1: from llvmlite.ir._utils import _HasMetadata
+       
+       
+    2: class Instruction(NamedValue, _HasMetadata):
+    1:     def __init__(self, parent, typ, opname, operands, name='', flags=()):
+ 9830:         super(Instruction, self).__init__(parent, typ, name=name)
+ 9830:         assert isinstance(parent, Block)
+ 9830:         assert isinstance(flags, (tuple, list))
+ 9830:         self.opname = opname
+ 9830:         self.operands = operands
+ 9830:         self.flags = list(flags)
+ 9830:         self.metadata = {}
+       
+    2:     @property
+    2:     def function(self):
+               return self.parent.function
+       
+    2:     @property
+    2:     def module(self):
+  456:         return self.parent.function.module
+       
+    1:     def descr(self, buf):
+  615:         opname = self.opname
+  615:         if self.flags:
+   51:             opname = ' '.join([opname] + self.flags)
+ 2460:         operands = ', '.join([op.get_reference() for op in self.operands])
+  615:         typ = self.type
+  615:         metadata = self._stringify_metadata(leading_comma=True)
+ 1230:         buf.append("{0} {1} {2}{3}\n"
+  615:                    .format(opname, typ, operands, metadata))
+       
+    1:     def replace_usage(self, old, new):
+               if old in self.operands:
+                   ops = []
+                   for op in self.operands:
+                       ops.append(new if op is old else op)
+                   self.operands = tuple(ops)
+                   self._clear_string_cache()
+       
+    1:     def __repr__(self):
+               return "<ir.%s %r of type '%s', opname %r, operands %r>" % (
+                   self.__class__.__name__, self.name, self.type,
+                   self.opname, self.operands)
+       
+       
+    2: class CallInstrAttributes(AttributeSet):
+    1:     _known = frozenset(['convergent', 'noreturn', 'nounwind', 'readonly',
+                               'readnone', 'noinline', 'alwaysinline'])
+       
+       
+    1: TailMarkerOptions = frozenset(['tail', 'musttail', 'notail'])
+       
+       
+    2: class FastMathFlags(AttributeSet):
+    1:     _known = frozenset(['fast', 'nnan', 'ninf', 'nsz', 'arcp', 'contract',
+                               'afn', 'reassoc'])
+       
+       
+    2: class CallInstr(Instruction):
+    2:     def __init__(self, parent, func, args, name='', cconv=None, tail=None,
+    1:                  fastmath=(), attrs=(), arg_attrs=None):
+  396:         self.cconv = (func.calling_convention
+  396:                       if cconv is None and isinstance(func, Function)
+   13:                       else cconv)
+       
+               # For backwards compatibility with previous API of accepting a "truthy"
+               # value for a hint to the optimizer to potentially tail optimize.
+  396:         if isinstance(tail, str) and tail in TailMarkerOptions:
+                   pass
+  396:         elif tail:
+                   tail = "tail"
+               else:
+  396:             tail = ""
+       
+  396:         self.tail = tail
+  396:         self.fastmath = FastMathFlags(fastmath)
+  396:         self.attributes = CallInstrAttributes(attrs)
+  396:         self.arg_attributes = {}
+  396:         if arg_attrs:
+                   for idx, attrs in arg_attrs.items():
+                       if not (0 <= idx < len(args)):
+                           raise ValueError("Invalid argument index {}"
+                                            .format(idx))
+                       self.arg_attributes[idx] = ArgumentAttributes(attrs)
+       
+               # Fix and validate arguments
+  396:         args = list(args)
+ 1253:         for i in range(len(func.function_type.args)):
+  857:             arg = args[i]
+  857:             expected_type = func.function_type.args[i]
+  857:             if (isinstance(expected_type, types.MetaDataType) and
+                           arg.type != expected_type):
+                       arg = MetaDataArgument(arg)
+  857:             if arg.type != expected_type:
+                       msg = ("Type of #{0} arg mismatch: {1} != {2}"
+                              .format(1 + i, expected_type, arg.type))
+                       raise TypeError(msg)
+  857:             args[i] = arg
+       
+  792:         super(CallInstr, self).__init__(parent, func.function_type.return_type,
+  396:                                         "call", [func] + list(args), name=name)
+       
+    2:     @property
+    2:     def callee(self):
+  806:         return self.operands[0]
+       
+    2:     @callee.setter
+    2:     def callee(self, newcallee):
+               self.operands[0] = newcallee
+       
+    2:     @property
+    2:     def args(self):
+  394:         return self.operands[1:]
+       
+    1:     def replace_callee(self, newfunc):
+               if newfunc.function_type != self.callee.function_type:
+                   raise TypeError("New function has incompatible type")
+               self.callee = newfunc
+       
+    2:     @property
+    2:     def called_function(self):
+               """The callee function"""
+               return self.callee
+       
+    1:     def _descr(self, buf, add_metadata):
+  394:         def descr_arg(i, a):
+  865:             if i in self.arg_attributes:
+                       attrs = ' '.join(self.arg_attributes[i]._to_list(a.type)) + ' '
+                   else:
+  865:                 attrs = ''
+  865:             return '{0} {1}{2}'.format(a.type, attrs, a.get_reference())
+ 1653:         args = ', '.join([descr_arg(i, a) for i, a in enumerate(self.args)])
+       
+  394:         fnty = self.callee.function_type
+               # Only print function type if variable-argument
+  394:         if fnty.var_arg:
+    2:             ty = fnty
+               # Otherwise, just print the return type.
+               else:
+                   # Fastmath flag work only in this case
+  392:             ty = fnty.return_type
+  394:         callee_ref = "{0} {1}".format(ty, self.callee.get_reference())
+  394:         if self.cconv:
+                   callee_ref = "{0} {1}".format(self.cconv, callee_ref)
+       
+  394:         tail_marker = ""
+  394:         if self.tail:
+                   tail_marker = "{0} ".format(self.tail)
+       
+  775:         fn_attrs = ' ' + ' '.join(self.attributes._to_list(fnty.return_type))\
+  775:             if self.attributes else ''
+       
+  788:         fm_attrs = ' ' + ' '.join(self.fastmath._to_list(fnty.return_type))\
+  788:             if self.fastmath else ''
+       
+  788:         buf.append("{tail}{op}{fastmath} {callee}({args}){attr}{meta}\n".format(
+  394:             tail=tail_marker,
+  394:             op=self.opname,
+  394:             callee=callee_ref,
+  394:             fastmath=fm_attrs,
+  394:             args=args,
+  394:             attr=fn_attrs,
+  394:             meta=(self._stringify_metadata(leading_comma=True)
+  394:                   if add_metadata else ""),
+               ))
+       
+    1:     def descr(self, buf):
+  394:         self._descr(buf, add_metadata=True)
+       
+       
+    2: class InvokeInstr(CallInstr):
+    2:     def __init__(self, parent, func, args, normal_to, unwind_to, name='',
+    1:                  cconv=None, fastmath=(), attrs=(), arg_attrs=None):
+               assert isinstance(normal_to, Block)
+               assert isinstance(unwind_to, Block)
+               super(InvokeInstr, self).__init__(parent, func, args, name, cconv,
+                                                 tail=False, fastmath=fastmath,
+                                                 attrs=attrs, arg_attrs=arg_attrs)
+               self.opname = "invoke"
+               self.normal_to = normal_to
+               self.unwind_to = unwind_to
+       
+    1:     def descr(self, buf):
+               super(InvokeInstr, self)._descr(buf, add_metadata=False)
+               buf.append("      to label {0} unwind label {1}{metadata}\n".format(
+                   self.normal_to.get_reference(),
+                   self.unwind_to.get_reference(),
+                   metadata=self._stringify_metadata(leading_comma=True),
+               ))
+       
+       
+    2: class Terminator(Instruction):
+    1:     def __init__(self, parent, opname, operands):
+ 2008:         super(Terminator, self).__init__(parent, types.VoidType(), opname,
+ 1004:                                          operands)
+       
+    1:     def descr(self, buf):
+  851:         opname = self.opname
+ 5915:         operands = ', '.join(["{0} {1}".format(op.type, op.get_reference())
+ 2532:                               for op in self.operands])
+  851:         metadata = self._stringify_metadata(leading_comma=True)
+  851:         buf.append("{0} {1}{2}".format(opname, operands, metadata))
+       
+       
+    2: class PredictableInstr(Instruction):
+       
+    1:     def set_weights(self, weights):
+  228:         operands = [MetaDataString(self.module, "branch_weights")]
+  684:         for w in weights:
+  456:             if w < 0:
+                       raise ValueError("branch weight must be a positive integer")
+  456:             operands.append(Constant(types.IntType(32), w))
+  228:         md = self.module.add_metadata(operands)
+  228:         self.set_metadata("prof", md)
+       
+       
+    2: class Ret(Terminator):
+    1:     def __init__(self, parent, opname, return_value=None):
+  153:         operands = [return_value] if return_value is not None else []
+  153:         super(Ret, self).__init__(parent, opname, operands)
+       
+    2:     @property
+    2:     def return_value(self):
+  153:         if self.operands:
+  149:             return self.operands[0]
+               else:
+    4:             return None
+       
+    1:     def descr(self, buf):
+  153:         return_value = self.return_value
+  153:         metadata = self._stringify_metadata(leading_comma=True)
+  153:         if return_value is not None:
+  298:             buf.append("{0} {1} {2}{3}\n"
+  298:                        .format(self.opname, return_value.type,
+  149:                                return_value.get_reference(),
+  149:                                metadata))
+               else:
+    4:             buf.append("{0}{1}\n".format(self.opname, metadata))
+       
+       
+    2: class Branch(Terminator):
+    1:     pass
+       
+       
+    2: class ConditionalBranch(PredictableInstr, Terminator):
+    1:     pass
+       
+       
+    2: class IndirectBranch(PredictableInstr, Terminator):
+    1:     def __init__(self, parent, opname, addr):
+               super(IndirectBranch, self).__init__(parent, opname, [addr])
+               self.destinations = []
+       
+    2:     @property
+    2:     def address(self):
+               return self.operands[0]
+       
+    1:     def add_destination(self, block):
+               assert isinstance(block, Block)
+               self.destinations.append(block)
+       
+    1:     def descr(self, buf):
+               destinations = ["label {0}".format(blk.get_reference())
+                               for blk in self.destinations]
+               buf.append("indirectbr {0} {1}, [{2}]  {3}\n".format(
+                   self.address.type,
+                   self.address.get_reference(),
+                   ', '.join(destinations),
+                   self._stringify_metadata(leading_comma=True),
+               ))
+       
+       
+    2: class SwitchInstr(PredictableInstr, Terminator):
+       
+    1:     def __init__(self, parent, opname, val, default):
+               super(SwitchInstr, self).__init__(parent, opname, [val])
+               self.default = default
+               self.cases = []
+       
+    2:     @property
+    2:     def value(self):
+               return self.operands[0]
+       
+    1:     def add_case(self, val, block):
+               assert isinstance(block, Block)
+               if not isinstance(val, Value):
+                   val = Constant(self.value.type, val)
+               self.cases.append((val, block))
+       
+    1:     def descr(self, buf):
+               cases = ["{0} {1}, label {2}".format(val.type, val.get_reference(),
+                                                    blk.get_reference())
+                        for val, blk in self.cases]
+               buf.append("switch {0} {1}, label {2} [{3}]  {4}\n".format(
+                   self.value.type,
+                   self.value.get_reference(),
+                   self.default.get_reference(),
+                   ' '.join(cases),
+                   self._stringify_metadata(leading_comma=True),
+               ))
+       
+       
+    2: class Resume(Terminator):
+    1:     pass
+       
+       
+    2: class SelectInstr(Instruction):
+    1:     def __init__(self, parent, cond, lhs, rhs, name='', flags=()):
+  206:         assert lhs.type == rhs.type
+  412:         super(SelectInstr, self).__init__(parent, lhs.type, "select",
+  206:                                           [cond, lhs, rhs], name=name,
+  206:                                           flags=flags)
+       
+    2:     @property
+    2:     def cond(self):
+  412:         return self.operands[0]
+       
+    2:     @property
+    2:     def lhs(self):
+  412:         return self.operands[1]
+       
+    2:     @property
+    2:     def rhs(self):
+  412:         return self.operands[2]
+       
+    1:     def descr(self, buf):
+  412:         buf.append("select {0} {1} {2}, {3} {4}, {5} {6} {7}\n".format(
+  206:             ' '.join(self.flags),
+  206:             self.cond.type, self.cond.get_reference(),
+  206:             self.lhs.type, self.lhs.get_reference(),
+  206:             self.rhs.type, self.rhs.get_reference(),
+  206:             self._stringify_metadata(leading_comma=True),
+               ))
+       
+       
+    2: class CompareInstr(Instruction):
+           # Define the following in subclasses
+    1:     OPNAME = 'invalid-compare'
+    1:     VALID_OP = {}
+       
+    1:     def __init__(self, parent, op, lhs, rhs, name='', flags=[]):
+  755:         if op not in self.VALID_OP:
+                   raise ValueError("invalid comparison %r for %s" % (op, self.OPNAME))
+  755:         for flag in flags:
+                   if flag not in self.VALID_FLAG:
+                       raise ValueError("invalid flag %r for %s" % (flag, self.OPNAME))
+  755:         opname = self.OPNAME
+  755:         if isinstance(lhs.type, types.VectorType):
+                   typ = types.VectorType(types.IntType(1), lhs.type.count)
+               else:
+  755:             typ = types.IntType(1)
+ 1510:         super(CompareInstr, self).__init__(parent, typ,
+  755:                                            opname, [lhs, rhs], flags=flags,
+  755:                                            name=name)
+  755:         self.op = op
+       
+    1:     def descr(self, buf):
+ 1510:         buf.append("{opname}{flags} {op} {ty} {lhs}, {rhs} {meta}\n".format(
+  755:             opname=self.opname,
+ 1510:             flags=''.join(' ' + it for it in self.flags),
+  755:             op=self.op,
+  755:             ty=self.operands[0].type,
+  755:             lhs=self.operands[0].get_reference(),
+  755:             rhs=self.operands[1].get_reference(),
+  755:             meta=self._stringify_metadata(leading_comma=True),
+               ))
+       
+       
+    2: class ICMPInstr(CompareInstr):
+    1:     OPNAME = 'icmp'
+    1:     VALID_OP = {
+    1:         'eq': 'equal',
+    1:         'ne': 'not equal',
+    1:         'ugt': 'unsigned greater than',
+    1:         'uge': 'unsigned greater or equal',
+    1:         'ult': 'unsigned less than',
+    1:         'ule': 'unsigned less or equal',
+    1:         'sgt': 'signed greater than',
+    1:         'sge': 'signed greater or equal',
+    1:         'slt': 'signed less than',
+    1:         'sle': 'signed less or equal',
+           }
+    1:     VALID_FLAG = set()
+       
+       
+    2: class FCMPInstr(CompareInstr):
+    1:     OPNAME = 'fcmp'
+   17:     VALID_OP = {
+    1:         'false': 'no comparison, always returns false',
+    1:         'oeq': 'ordered and equal',
+    1:         'ogt': 'ordered and greater than',
+    1:         'oge': 'ordered and greater than or equal',
+    1:         'olt': 'ordered and less than',
+    1:         'ole': 'ordered and less than or equal',
+    1:         'one': 'ordered and not equal',
+    1:         'ord': 'ordered (no nans)',
+    1:         'ueq': 'unordered or equal',
+    1:         'ugt': 'unordered or greater than',
+    1:         'uge': 'unordered or greater than or equal',
+    1:         'ult': 'unordered or less than',
+    1:         'ule': 'unordered or less than or equal',
+    1:         'une': 'unordered or not equal',
+    1:         'uno': 'unordered (either nans)',
+    1:         'true': 'no comparison, always returns true',
+           }
+    1:     VALID_FLAG = {'nnan', 'ninf', 'nsz', 'arcp', 'contract', 'afn', 'reassoc',
+                         'fast'}
+       
+       
+    2: class CastInstr(Instruction):
+    1:     def __init__(self, parent, op, val, typ, name=''):
+  108:         super(CastInstr, self).__init__(parent, typ, op, [val], name=name)
+       
+    1:     def descr(self, buf):
+  216:         buf.append("{0} {1} {2} to {3} {4}\n".format(
+  108:             self.opname,
+  108:             self.operands[0].type,
+  108:             self.operands[0].get_reference(),
+  108:             self.type,
+  108:             self._stringify_metadata(leading_comma=True),
+               ))
+       
+       
+    2: class LoadInstr(Instruction):
+       
+    1:     def __init__(self, parent, ptr, name=''):
+ 2582:         super(LoadInstr, self).__init__(parent, ptr.type.pointee, "load",
+ 1291:                                         [ptr], name=name)
+ 1291:         self.align = None
+       
+    1:     def descr(self, buf):
+ 1291:         [val] = self.operands
+ 1291:         if self.align is not None:
+                   align = ', align %d' % (self.align)
+               else:
+ 1291:             align = ''
+ 2582:         buf.append("load {0}, {1} {2}{3}{4}\n".format(
+ 1291:             val.type.pointee,
+ 1291:             val.type,
+ 1291:             val.get_reference(),
+ 1291:             align,
+ 1291:             self._stringify_metadata(leading_comma=True),
+               ))
+       
+       
+    2: class StoreInstr(Instruction):
+    1:     def __init__(self, parent, val, ptr):
+ 2754:         super(StoreInstr, self).__init__(parent, types.VoidType(), "store",
+ 1377:                                          [val, ptr])
+       
+    1:     def descr(self, buf):
+ 1377:         val, ptr = self.operands
+ 1377:         if self.align is not None:
+                   align = ', align %d' % (self.align)
+               else:
+ 1377:             align = ''
+ 2754:         buf.append("store {0} {1}, {2} {3}{4}{5}\n".format(
+ 1377:             val.type,
+ 1377:             val.get_reference(),
+ 1377:             ptr.type,
+ 1377:             ptr.get_reference(),
+ 1377:             align,
+ 1377:             self._stringify_metadata(leading_comma=True),
+               ))
+       
+       
+    2: class LoadAtomicInstr(Instruction):
+    1:     def __init__(self, parent, ptr, ordering, align, name=''):
+               super(LoadAtomicInstr, self).__init__(parent, ptr.type.pointee,
+                                                     "load atomic", [ptr], name=name)
+               self.ordering = ordering
+               self.align = align
+       
+    1:     def descr(self, buf):
+               [val] = self.operands
+               buf.append("load atomic {0}, {1} {2} {3}, align {4}{5}\n".format(
+                   val.type.pointee,
+                   val.type,
+                   val.get_reference(),
+                   self.ordering,
+                   self.align,
+                   self._stringify_metadata(leading_comma=True),
+               ))
+       
+       
+    2: class StoreAtomicInstr(Instruction):
+    1:     def __init__(self, parent, val, ptr, ordering, align):
+               super(StoreAtomicInstr, self).__init__(parent, types.VoidType(),
+                                                      "store atomic", [val, ptr])
+               self.ordering = ordering
+               self.align = align
+       
+    1:     def descr(self, buf):
+               val, ptr = self.operands
+               buf.append("store atomic {0} {1}, {2} {3} {4}, align {5}{6}\n".format(
+                   val.type,
+                   val.get_reference(),
+                   ptr.type,
+                   ptr.get_reference(),
+                   self.ordering,
+                   self.align,
+                   self._stringify_metadata(leading_comma=True),
+               ))
+       
+       
+    2: class AllocaInstr(Instruction):
+    1:     def __init__(self, parent, typ, count, name):
+  415:         operands = [count] if count else ()
+  830:         super(AllocaInstr, self).__init__(parent, typ.as_pointer(), "alloca",
+  415:                                           operands, name)
+  415:         self.align = None
+       
+    1:     def descr(self, buf):
+  415:         buf.append("{0} {1}".format(self.opname, self.type.pointee))
+  415:         if self.operands:
+    8:             op, = self.operands
+    8:             buf.append(", {0} {1}".format(op.type, op.get_reference()))
+  415:         if self.align is not None:
+                   buf.append(", align {0}".format(self.align))
+  415:         if self.metadata:
+                   buf.append(self._stringify_metadata(leading_comma=True))
+       
+       
+    2: class GEPInstr(Instruction):
+    1:     def __init__(self, parent, ptr, indices, inbounds, name):
+  788:         typ = ptr.type
+  788:         lasttyp = None
+  788:         lastaddrspace = 0
+ 2316:         for i in indices:
+ 1528:             lasttyp, typ = typ, typ.gep(i)
+                   # inherit the addrspace from the last seen pointer
+ 1528:             if isinstance(lasttyp, types.PointerType):
+  788:                 lastaddrspace = lasttyp.addrspace
+       
+ 1465:         if (not isinstance(typ, types.PointerType) and
+  677:                 isinstance(lasttyp, types.PointerType)):
+   48:             typ = lasttyp
+               else:
+  740:             typ = typ.as_pointer(lastaddrspace)
+       
+ 1576:         super(GEPInstr, self).__init__(parent, typ, "getelementptr",
+  788:                                        [ptr] + list(indices), name=name)
+  788:         self.pointer = ptr
+  788:         self.indices = indices
+  788:         self.inbounds = inbounds
+       
+    1:     def descr(self, buf):
+ 5420:         indices = ['{0} {1}'.format(i.type, i.get_reference())
+ 2316:                    for i in self.indices]
+  788:         op = "getelementptr inbounds" if self.inbounds else "getelementptr"
+ 1576:         buf.append("{0} {1}, {2} {3}, {4} {5}\n".format(
+  788:                    op,
+  788:                    self.pointer.type.pointee,
+  788:                    self.pointer.type,
+  788:                    self.pointer.get_reference(),
+  788:                    ', '.join(indices),
+  788:                    self._stringify_metadata(leading_comma=True),
+                          ))
+       
+       
+    2: class PhiInstr(Instruction):
+    1:     def __init__(self, parent, typ, name, flags=()):
+   64:         super(PhiInstr, self).__init__(parent, typ, "phi", (), name=name,
+   32:                                        flags=flags)
+   32:         self.incomings = []
+       
+    1:     def descr(self, buf):
+  288:         incs = ', '.join('[{0}, {1}]'.format(v.get_reference(),
+   64:                                              b.get_reference())
+   96:                          for v, b in self.incomings)
+   64:         buf.append("phi {0} {1} {2} {3}\n".format(
+   32:                    ' '.join(self.flags),
+   32:                    self.type,
+   32:                    incs,
+   32:                    self._stringify_metadata(leading_comma=True),
+                          ))
+       
+    1:     def add_incoming(self, value, block):
+   64:         assert isinstance(block, Block)
+   64:         self.incomings.append((value, block))
+       
+    1:     def replace_usage(self, old, new):
+               self.incomings = [((new if val is old else val), blk)
+                                 for (val, blk) in self.incomings]
+       
+       
+    2: class ExtractElement(Instruction):
+    1:     def __init__(self, parent, vector, index, name=''):
+               if not isinstance(vector.type, types.VectorType):
+                   raise TypeError("vector needs to be of VectorType.")
+               if not isinstance(index.type, types.IntType):
+                   raise TypeError("index needs to be of IntType.")
+               typ = vector.type.element
+               super(ExtractElement, self).__init__(parent, typ, "extractelement",
+                                                    [vector, index], name=name)
+       
+    1:     def descr(self, buf):
+               operands = ", ".join("{0} {1}".format(
+                          op.type, op.get_reference()) for op in self.operands)
+               buf.append("{opname} {operands}\n".format(
+                          opname=self.opname, operands=operands))
+       
+       
+    2: class InsertElement(Instruction):
+    1:     def __init__(self, parent, vector, value, index, name=''):
+               if not isinstance(vector.type, types.VectorType):
+                   raise TypeError("vector needs to be of VectorType.")
+               if not value.type == vector.type.element:
+                   raise TypeError(
+                       "value needs to be of type {} not {}.".format(
+                           vector.type.element, value.type))
+               if not isinstance(index.type, types.IntType):
+                   raise TypeError("index needs to be of IntType.")
+               typ = vector.type
+               super(InsertElement, self).__init__(parent, typ, "insertelement",
+                                                   [vector, value, index], name=name)
+       
+    1:     def descr(self, buf):
+               operands = ", ".join("{0} {1}".format(
+                          op.type, op.get_reference()) for op in self.operands)
+               buf.append("{opname} {operands}\n".format(
+                          opname=self.opname, operands=operands))
+       
+       
+    2: class ShuffleVector(Instruction):
+    1:     def __init__(self, parent, vector1, vector2, mask, name=''):
+               if not isinstance(vector1.type, types.VectorType):
+                   raise TypeError("vector1 needs to be of VectorType.")
+               if vector2 != Undefined:
+                   if vector2.type != vector1.type:
+                       raise TypeError("vector2 needs to be " +
+                                       "Undefined or of the same type as vector1.")
+               if (not isinstance(mask, Constant) or
+                   not isinstance(mask.type, types.VectorType) or
+                   not (isinstance(mask.type.element, types.IntType) and
+                        mask.type.element.width == 32)):
+                   raise TypeError("mask needs to be a constant i32 vector.")
+               typ = types.VectorType(vector1.type.element, mask.type.count)
+               index_range = range(vector1.type.count
+                                   if vector2 == Undefined
+                                   else 2 * vector1.type.count)
+               if not all(ii.constant in index_range for ii in mask.constant):
+                   raise IndexError(
+                       "mask values need to be in {0}".format(index_range),
+                   )
+               super(ShuffleVector, self).__init__(parent, typ, "shufflevector",
+                                                   [vector1, vector2, mask], name=name)
+       
+    1:     def descr(self, buf):
+               buf.append("shufflevector {0} {1}\n".format(
+                          ", ".join("{0} {1}".format(op.type, op.get_reference())
+                                    for op in self.operands),
+                          self._stringify_metadata(leading_comma=True),
+                          ))
+       
+       
+    2: class ExtractValue(Instruction):
+    1:     def __init__(self, parent, agg, indices, name=''):
+ 2210:         typ = agg.type
+ 2210:         try:
+ 4420:             for i in indices:
+ 2210:                 typ = typ.elements[i]
+               except (AttributeError, IndexError):
+                   raise TypeError("Can't index at %r in %s"
+                                   % (list(indices), agg.type))
+       
+ 4420:         super(ExtractValue, self).__init__(parent, typ, "extractvalue",
+ 2210:                                            [agg], name=name)
+       
+ 2210:         self.aggregate = agg
+ 2210:         self.indices = indices
+       
+    1:     def descr(self, buf):
+ 6630:         indices = [str(i) for i in self.indices]
+       
+ 4420:         buf.append("extractvalue {0} {1}, {2} {3}\n".format(
+ 2210:                    self.aggregate.type,
+ 2210:                    self.aggregate.get_reference(),
+ 2210:                    ', '.join(indices),
+ 2210:                    self._stringify_metadata(leading_comma=True),
+                          ))
+       
+       
+    2: class InsertValue(Instruction):
+    1:     def __init__(self, parent, agg, elem, indices, name=''):
+  628:         typ = agg.type
+  628:         try:
+ 1256:             for i in indices:
+  628:                 typ = typ.elements[i]
+               except (AttributeError, IndexError):
+                   raise TypeError("Can't index at %r in %s"
+                                   % (list(indices), agg.type))
+  628:         if elem.type != typ:
+                   raise TypeError("Can only insert %s at %r in %s: got %s"
+                                   % (typ, list(indices), agg.type, elem.type))
+ 1256:         super(InsertValue, self).__init__(parent, agg.type, "insertvalue",
+  628:                                           [agg, elem], name=name)
+       
+  628:         self.aggregate = agg
+  628:         self.value = elem
+  628:         self.indices = indices
+       
+    1:     def descr(self, buf):
+ 1884:         indices = [str(i) for i in self.indices]
+       
+ 1256:         buf.append("insertvalue {0} {1}, {2} {3}, {4} {5}\n".format(
+  628:                    self.aggregate.type, self.aggregate.get_reference(),
+  628:                    self.value.type, self.value.get_reference(),
+  628:                    ', '.join(indices),
+  628:                    self._stringify_metadata(leading_comma=True),
+                          ))
+       
+       
+    2: class Unreachable(Instruction):
+    1:     def __init__(self, parent):
+               super(Unreachable, self).__init__(parent, types.VoidType(),
+                                                 "unreachable", (), name='')
+       
+    1:     def descr(self, buf):
+               buf += (self.opname, "\n")
+       
+       
+    2: class InlineAsm(object):
+    1:     def __init__(self, ftype, asm, constraint, side_effect=False):
+               self.type = ftype.return_type
+               self.function_type = ftype
+               self.asm = asm
+               self.constraint = constraint
+               self.side_effect = side_effect
+       
+    1:     def descr(self, buf):
+               sideeffect = 'sideeffect' if self.side_effect else ''
+               fmt = 'asm {sideeffect} "{asm}", "{constraint}"\n'
+               buf.append(fmt.format(sideeffect=sideeffect, asm=self.asm,
+                                     constraint=self.constraint))
+       
+    1:     def get_reference(self):
+               buf = []
+               self.descr(buf)
+               return "".join(buf)
+       
+    1:     def __str__(self):
+               return "{0} {1}".format(self.type, self.get_reference())
+       
+       
+    2: class AtomicRMW(Instruction):
+    1:     def __init__(self, parent, op, ptr, val, ordering, name):
+    4:         super(AtomicRMW, self).__init__(parent, val.type, "atomicrmw",
+    2:                                         (ptr, val), name=name)
+    2:         self.operation = op
+    2:         self.ordering = ordering
+       
+    1:     def descr(self, buf):
+    2:         ptr, val = self.operands
+    2:         fmt = ("atomicrmw {op} {ptrty} {ptr}, {valty} {val} {ordering} "
+                      "{metadata}\n")
+    4:         buf.append(fmt.format(op=self.operation,
+    2:                               ptrty=ptr.type,
+    2:                               ptr=ptr.get_reference(),
+    2:                               valty=val.type,
+    2:                               val=val.get_reference(),
+    2:                               ordering=self.ordering,
+    4:                               metadata=self._stringify_metadata(
+    2:                                   leading_comma=True),
+                                     ))
+       
+       
+    2: class CmpXchg(Instruction):
+    1:     """This instruction has changed since llvm3.5.  It is not compatible with
+           older llvm versions.
+           """
+       
+    1:     def __init__(self, parent, ptr, cmp, val, ordering, failordering, name):
+    1:         outtype = types.LiteralStructType([val.type, types.IntType(1)])
+    2:         super(CmpXchg, self).__init__(parent, outtype, "cmpxchg",
+    1:                                       (ptr, cmp, val), name=name)
+    1:         self.ordering = ordering
+    1:         self.failordering = failordering
+       
+    1:     def descr(self, buf):
+    1:         ptr, cmpval, val = self.operands
+    1:         fmt = "cmpxchg {ptrty} {ptr}, {ty} {cmp}, {ty} {val} {ordering} " \
+                     "{failordering} {metadata}\n"
+    2:         buf.append(fmt.format(ptrty=ptr.type,
+    1:                               ptr=ptr.get_reference(),
+    1:                               ty=cmpval.type,
+    1:                               cmp=cmpval.get_reference(),
+    1:                               val=val.get_reference(),
+    1:                               ordering=self.ordering,
+    1:                               failordering=self.failordering,
+    2:                               metadata=self._stringify_metadata(
+    1:                                   leading_comma=True),
+                                     ))
+       
+       
+    2: class _LandingPadClause(object):
+    1:     def __init__(self, value):
+               self.value = value
+       
+    1:     def __str__(self):
+               return "{kind} {type} {value}".format(
+                   kind=self.kind,
+                   type=self.value.type,
+                   value=self.value.get_reference())
+       
+       
+    2: class CatchClause(_LandingPadClause):
+    1:     kind = 'catch'
+       
+       
+    2: class FilterClause(_LandingPadClause):
+    1:     kind = 'filter'
+       
+    1:     def __init__(self, value):
+               assert isinstance(value, Constant)
+               assert isinstance(value.type, types.ArrayType)
+               super(FilterClause, self).__init__(value)
+       
+       
+    2: class LandingPadInstr(Instruction):
+    1:     def __init__(self, parent, typ, name='', cleanup=False):
+               super(LandingPadInstr, self).__init__(parent, typ, "landingpad", [],
+                                                     name=name)
+               self.cleanup = cleanup
+               self.clauses = []
+       
+    1:     def add_clause(self, clause):
+               assert isinstance(clause, _LandingPadClause)
+               self.clauses.append(clause)
+       
+    1:     def descr(self, buf):
+               fmt = "landingpad {type}{cleanup}{clauses}\n"
+               buf.append(fmt.format(type=self.type,
+                                     cleanup=' cleanup' if self.cleanup else '',
+                                     clauses=''.join(["\n      {0}".format(clause)
+                                                      for clause in self.clauses]),
+                                     ))
+       
+       
+    2: class Fence(Instruction):
+    1:     """
+           The `fence` instruction.
+       
+           As of LLVM 5.0.1:
+       
+           fence [syncscope("<target-scope>")] <ordering>  ; yields void
+           """
+       
+    1:     VALID_FENCE_ORDERINGS = {"acquire", "release", "acq_rel", "seq_cst"}
+       
+    1:     def __init__(self, parent, ordering, targetscope=None, name=''):
+    4:         super(Fence, self).__init__(parent, types.VoidType(), "fence", (),
+    2:                                     name=name)
+    2:         if ordering not in self.VALID_FENCE_ORDERINGS:
+                   msg = "Invalid fence ordering \"{0}\"! Should be one of {1}."
+                   raise ValueError(msg .format(ordering,
+                                                ", ".join(self.VALID_FENCE_ORDERINGS)))
+    2:         self.ordering = ordering
+    2:         self.targetscope = targetscope
+       
+    1:     def descr(self, buf):
+    2:         if self.targetscope is None:
+    2:             syncscope = ""
+               else:
+                   syncscope = 'syncscope("{0}") '.format(self.targetscope)
+       
+    2:         fmt = "fence {syncscope}{ordering}\n"
+    4:         buf.append(fmt.format(syncscope=syncscope,
+    2:                               ordering=self.ordering,
+                                     ))
+       
+       
+    2: class Comment(Instruction):
+    1:     """
+           A line comment.
+           """
+       
+    1:     def __init__(self, parent, text):
+               super(Comment, self).__init__(parent, types.VoidType(), ";", (),
+                                             name='')
+               assert "\n" not in text, "Comment cannot contain new line"
+               self.text = text
+       
+    1:     def descr(self, buf):
+               buf.append(f"; {self.text}")

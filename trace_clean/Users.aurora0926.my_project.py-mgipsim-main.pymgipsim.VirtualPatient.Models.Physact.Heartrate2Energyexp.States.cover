@@ -1,0 +1,10 @@
+    1: import numpy as np
+       
+    2: class States:
+    1:     def __init__(self):
+    2:         self.EE: np.ndarray = np.array([], dtype=float)
+       
+    2:         self.as_array: np.ndarray  = np.array([], dtype=float)
+       
+    2:         self.state_names = ['EE']
+    2:         self.state_units = ['-']

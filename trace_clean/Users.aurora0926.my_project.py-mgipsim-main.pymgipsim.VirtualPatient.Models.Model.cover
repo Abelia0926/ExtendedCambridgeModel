@@ -1,0 +1,42 @@
+    1: from abc import ABC, abstractmethod
+    2: class BaseModel(ABC):
+    1:     """ Abstract Model class.
+       
+           Attributes:
+               inputs
+               states
+               initial_conditions
+               parameters
+               time: ? Technically should be an attribute of the ModelSolver if possible. It is not model specific.
+       
+           """
+       
+       
+    1:     output_state: int = NotImplemented
+       
+    1:     def __init__(self):
+               self.states = NotImplemented
+               self.inputs = NotImplemented
+               self.parameters = NotImplemented
+               self.states = NotImplemented
+               self.time = NotImplemented
+               self.sampling_time = NotImplemented
+               self.initial_conditions = NotImplemented
+       
+    2:     @abstractmethod
+    2:     def preprocessing(self):
+               pass
+       
+    2:     @staticmethod
+    2:     @abstractmethod
+    2:     def model(states, time, parameters, inputs):
+               pass
+       
+    2:     @staticmethod
+    2:     def rate_equations(states, time, parameters, inputs):
+               pass
+       
+    2:     @staticmethod
+    2:     @abstractmethod
+    2:     def output_equilibrium(parameters, inputs):
+               pass

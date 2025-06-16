@@ -1,0 +1,25 @@
+    1: import numpy as np
+    1: from dataclasses import dataclass, field
+    1: from pymgipsim.InputGeneration.signal import Signal
+    1: from pymgipsim.VirtualPatient.Models.Inputs import BaseInputs
+       
+    3: @dataclass
+    2: class Inputs(BaseInputs):
+    2:     running_speed: Signal = field(default_factory=lambda: Signal())
+    2:     running_incline: Signal = field(default_factory=lambda: Signal())
+    2:     cycling_power: Signal = field(default_factory=lambda: Signal())
+    2:     standard_power: Signal = field(default_factory=lambda: Signal())
+    2:     METACSM: Signal = field(default_factory=lambda: Signal())
+       
+    2:     @property
+    2:     def as_array(self):
+   15:         self._as_array = np.stack((self.running_speed.sampled_signal, self.running_incline.sampled_signal, self.cycling_power.sampled_signal,
+   10:                                    self.standard_power.sampled_signal, self.METACSM.sampled_signal),axis=1)
+    5:         return self._as_array
+       
+    2:     @as_array.setter
+    2:     def as_array(self, array: np.ndarray):
+    1:         array_sw = np.swapaxes(array, 0, 1)
+    1:         self.running_speed.sampled_signal, self.running_incline.sampled_signal, self.cycling_power.sampled_signal,\
+    2:             self.standard_power.sampled_signal, self.METACSM.sampled_signal = array_sw
+    1:         self._as_array = array

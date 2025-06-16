@@ -1,0 +1,181 @@
+    1: """
+       Defines CPU Options for use in the CPU target
+       """
+    1: from abc import ABCMeta, abstractmethod
+       
+       
+    2: class AbstractOptionValue(metaclass=ABCMeta):
+    1:     """Abstract base class for custom option values.
+           """
+    2:     @abstractmethod
+    2:     def encode(self) -> str:
+               """Returns an encoding of the values
+               """
+               ...
+       
+    1:     def __repr__(self) -> str:
+ 3816:         return f"{self.__class__.__name__}({self.encode()})"
+       
+       
+    2: class FastMathOptions(AbstractOptionValue):
+    1:     """
+           Options for controlling fast math optimization.
+           """
+       
+    1:     def __init__(self, value):
+               # https://releases.llvm.org/7.0.0/docs/LangRef.html#fast-math-flags
+   16:         valid_flags = {
+                   'fast',
+                   'nnan', 'ninf', 'nsz', 'arcp',
+                   'contract', 'afn', 'reassoc',
+               }
+       
+   16:         if isinstance(value, FastMathOptions):
+   15:             self.flags = value.flags.copy()
+    1:         elif value is True:
+                   self.flags = {'fast'}
+    1:         elif value is False:
+    1:             self.flags = set()
+               elif isinstance(value, set):
+                   invalid = value - valid_flags
+                   if invalid:
+                       raise ValueError("Unrecognized fastmath flags: %s" % invalid)
+                   self.flags = value
+               elif isinstance(value, dict):
+                   invalid = set(value.keys()) - valid_flags
+                   if invalid:
+                       raise ValueError("Unrecognized fastmath flags: %s" % invalid)
+                   self.flags = {v for v, enable in value.items() if enable}
+               else:
+                   msg = "Expected fastmath option(s) to be either a bool, dict or set"
+                   raise ValueError(msg)
+       
+    1:     def __bool__(self):
+   24:         return bool(self.flags)
+       
+    1:     __nonzero__ = __bool__
+       
+    1:     def encode(self) -> str:
+ 1272:         return str(self.flags)
+       
+    1:     def __eq__(self, other):
+   79:         if type(other) is type(self):
+   79:             return self.flags == other.flags
+               return NotImplemented
+       
+       
+    2: class ParallelOptions(AbstractOptionValue):
+    1:     """
+           Options for controlling auto parallelization.
+           """
+    1:     __slots__ = ("enabled", "comprehension", "reduction", "inplace_binop",
+                        "setitem", "numpy", "stencil", "fusion", "prange")
+       
+    1:     def __init__(self, value):
+    1:         if isinstance(value, bool):
+    1:             self.enabled = value
+    1:             self.comprehension = value
+    1:             self.reduction = value
+    1:             self.inplace_binop = value
+    1:             self.setitem = value
+    1:             self.numpy = value
+    1:             self.stencil = value
+    1:             self.fusion = value
+    1:             self.prange = value
+               elif isinstance(value, dict):
+                   self.enabled = True
+                   self.comprehension = value.pop('comprehension', True)
+                   self.reduction = value.pop('reduction', True)
+                   self.inplace_binop = value.pop('inplace_binop', True)
+                   self.setitem = value.pop('setitem', True)
+                   self.numpy = value.pop('numpy', True)
+                   self.stencil = value.pop('stencil', True)
+                   self.fusion = value.pop('fusion', True)
+                   self.prange = value.pop('prange', True)
+                   if value:
+                       msg = "Unrecognized parallel options: %s" % value.keys()
+                       raise NameError(msg)
+               elif isinstance(value, ParallelOptions):
+                   self.enabled = value.enabled
+                   self.comprehension = value.comprehension
+                   self.reduction = value.reduction
+                   self.inplace_binop = value.inplace_binop
+                   self.setitem = value.setitem
+                   self.numpy = value.numpy
+                   self.stencil = value.stencil
+                   self.fusion = value.fusion
+                   self.prange = value.prange
+               else:
+                   msg = "Expect parallel option to be either a bool or a dict"
+                   raise ValueError(msg)
+       
+    1:     def _get_values(self):
+               """Get values as dictionary.
+               """
+13992:         return {k: getattr(self, k) for k in self.__slots__}
+       
+    1:     def __eq__(self, other):
+               if type(other) is type(self):
+                   return self._get_values() == other._get_values()
+               return NotImplemented
+       
+    1:     def encode(self) -> str:
+13992:         return ", ".join(f"{k}={v}" for k, v in self._get_values().items())
+       
+       
+    2: class InlineOptions(AbstractOptionValue):
+    1:     """
+           Options for controlling inlining
+           """
+       
+    1:     def __init__(self, value):
+ 1329:         ok = False
+ 1329:         if isinstance(value, str):
+ 1329:             if value in ('always', 'never'):
+ 1329:                 ok = True
+               else:
+                   ok = hasattr(value, '__call__')
+       
+ 1329:         if ok:
+ 1329:             self._inline = value
+               else:
+                   msg = ("kwarg 'inline' must be one of the strings 'always' or "
+                          "'never', or it can be a callable that returns True/False. "
+                          "Found value %s" % value)
+                   raise ValueError(msg)
+       
+    2:     @property
+    2:     def is_never_inline(self):
+               """
+               True if never inline
+               """
+   46:         return self._inline == 'never'
+       
+    2:     @property
+    2:     def is_always_inline(self):
+               """
+               True if always inline
+               """
+               return self._inline == 'always'
+       
+    2:     @property
+    2:     def has_cost_model(self):
+               """
+               True if a cost model is provided
+               """
+               return not (self.is_always_inline or self.is_never_inline)
+       
+    2:     @property
+    2:     def value(self):
+               """
+               The raw value
+               """
+               return self._inline
+       
+    1:     def __eq__(self, other):
+               if type(other) is type(self):
+                   return self.value == other.value
+               return NotImplemented
+       
+    1:     def encode(self) -> str:
+ 1272:         return repr(self._inline)

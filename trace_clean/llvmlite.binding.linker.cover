@@ -1,0 +1,20 @@
+    1: from ctypes import c_int, c_char_p, POINTER
+    1: from llvmlite.binding import ffi
+       
+       
+    1: def link_modules(dst, src):
+  184:     with ffi.OutputString() as outerr:
+   92:         err = ffi.lib.LLVMPY_LinkModules(dst, src, outerr)
+               # The underlying module was destroyed
+   92:         src.detach()
+   92:         if err:
+                   raise RuntimeError(str(outerr))
+       
+       
+    1: ffi.lib.LLVMPY_LinkModules.argtypes = [
+    1:     ffi.LLVMModuleRef,
+    1:     ffi.LLVMModuleRef,
+    1:     POINTER(c_char_p),
+       ]
+       
+    1: ffi.lib.LLVMPY_LinkModules.restype = c_int

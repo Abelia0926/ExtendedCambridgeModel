@@ -1,0 +1,54 @@
+    1: import json, argparse, glob, os
+    1: from ..Utilities.paths import default_settings_path, controller_path
+    1: from pymgipsim.Interface.Messages.parser_colors import color_help_text, color_group_header_text
+    1: from pymgipsim import Controllers
+    1: from pymgipsim.Utilities.Scenario import scenario
+    1: from pymgipsim.Interface.Messages.parser_colors import color_error_warning_text
+       
+    1: def controller_args_to_scenario(scenario_instance: scenario, args):
+    1:     if args.controller_name!=Controllers.OpenLoop.controller.Controller.name\
+                   and "T2DM" in scenario_instance.patient.model.name:
+               print(color_error_warning_text(scenario_instance.patient.model.name + " does not support " + args.controller_name))
+               args.controller_name = scenario_instance.controller.name
+               args.controller_parameters = scenario_instance.controller.parameters
+           else:
+    1:         scenario_instance.controller.name = args.controller_name
+    1:         scenario_instance.controller.parameters = args.controller_parameters
+       
+    1: def get_controller_names():
+    1:     paths = glob.glob(os.path.join(controller_path, "*", ""))
+    7:     controllers = [folder for folder in paths if '__' not in folder]
+    6:     controllers = [folder.split(os.sep)[-2:] for folder in controllers]
+    6:     controllers = [folder[0] for folder in controllers]
+    1:     return controllers
+       
+    1: def generate_controller_settings_parser(parent_parser = [], add_help = True):
+       
+    2:     controller_settings_parser = argparse.ArgumentParser(
+    1:                                                     prog = 'Controller Settings',
+    1:                                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    1:                                                     parents=parent_parser,
+    1:                                                     add_help=add_help
+                                                           )
+       
+    1:     controller_group = controller_settings_parser.add_argument_group(color_group_header_text('Controller'))
+    2:     controller_group.add_argument(
+    1:                             '-ctrl',
+    1:                             '--controller-name',
+    1:                             help = color_help_text("Name of the closed-loop controller algorithm."),
+    1:                             dest = 'controller_name',
+    1:                             choices=get_controller_names(),
+    1:                             type = str,
+    1:                             default = Controllers.OpenLoop.controller.Controller.name
+                                   )
+       
+    2:     controller_group.add_argument(
+    1:                             '-ctrlparams',
+    1:                             '--controller-parameters',
+    1:                             help = color_help_text("Parameters of the controller."),
+    1:                             dest = 'controller_parameters',
+    1:                             type = list,
+    1:                             default = []
+                                   )
+       
+    1:     return controller_settings_parser

@@ -1,0 +1,140 @@
+       # This file is part of Patsy
+       # Copyright (C) 2011-2013 Nathaniel Smith <njs@pobox.com>
+       # See file LICENSE.txt for license information.
+       
+    1: """patsy is a Python package for describing statistical models and building
+       design matrices. It is closely inspired by the 'formula' mini-language used in
+       R and S."""
+       
+    1: from patsy.version import __version__
+       
+       # Do this first, to make it easy to check for warnings while testing:
+    1: import os
+       
+    1: if os.environ.get("PATSY_FORCE_NO_WARNINGS"):
+           import warnings
+       
+           warnings.filterwarnings("error", module="^patsy")
+           warnings.filterwarnings(
+               "ignore",
+               "is_categorical_dtype is deprecated",
+               DeprecationWarning,
+               module="^patsy",
+           )
+           del warnings
+    1: del os
+       
+    1: import patsy.origin
+       
+       
+    2: class PatsyError(Exception):
+    1:     """This is the main error type raised by Patsy functions.
+       
+           In addition to the usual Python exception features, you can pass a second
+           argument to this function specifying the origin of the error; this is
+           included in any error message, and used to help the user locate errors
+           arising from malformed formulas. This second argument should be an
+           :class:`Origin` object, or else an arbitrary object with a ``.origin``
+           attribute. (If it is neither of these things, then it will simply be
+           ignored.)
+       
+           For ordinary display to the user with default formatting, use
+           ``str(exc)``. If you want to do something cleverer, you can use the
+           ``.message`` and ``.origin`` attributes directly. (The latter may be
+           None.)
+           """
+       
+    1:     def __init__(self, message, origin=None):
+               Exception.__init__(self, message)
+               self.message = message
+               self.origin = None
+               self.set_origin(origin)
+       
+    1:     def __str__(self):
+               if self.origin is None:
+                   return self.message
+               else:
+                   return "%s\n%s" % (self.message, self.origin.caretize(indent=4))
+       
+    1:     def set_origin(self, origin):
+               # This is useful to modify an exception to add origin information as
+               # it "passes by", without losing traceback information. (In Python 3
+               # we can use the built-in exception wrapping stuff, but it will be
+               # some time before we can count on that...)
+               if self.origin is None:
+                   if hasattr(origin, "origin"):
+                       origin = origin.origin
+                   if not isinstance(origin, patsy.origin.Origin):
+                       origin = None
+                   self.origin = origin
+       
+       
+    1: __all__ = ["PatsyError"]
+       
+       # We make a rich API available for explicit use. To see what exactly is
+       # exported, check each module's __all__, or import this module and look at its
+       # __all__.
+       
+       
+    1: def _reexport(mod):
+   13:     __all__.extend(mod.__all__)
+   48:     for var in mod.__all__:
+   35:         globals()[var] = getattr(mod, var)
+       
+       
+       # This used to have less copy-paste, but explicit import statements make
+       # packaging tools like py2exe and py2app happier. Sigh.
+    1: import patsy.highlevel
+       
+    1: _reexport(patsy.highlevel)
+       
+    1: import patsy.build
+       
+    1: _reexport(patsy.build)
+       
+    1: import patsy.constraint
+       
+    1: _reexport(patsy.constraint)
+       
+    1: import patsy.contrasts
+       
+    1: _reexport(patsy.contrasts)
+       
+    1: import patsy.desc
+       
+    1: _reexport(patsy.desc)
+       
+    1: import patsy.design_info
+       
+    1: _reexport(patsy.design_info)
+       
+    1: import patsy.eval
+       
+    1: _reexport(patsy.eval)
+       
+    1: import patsy.origin
+       
+    1: _reexport(patsy.origin)
+       
+    1: import patsy.state
+       
+    1: _reexport(patsy.state)
+       
+    1: import patsy.user_util
+       
+    1: _reexport(patsy.user_util)
+       
+    1: import patsy.missing
+       
+    1: _reexport(patsy.missing)
+       
+    1: import patsy.splines
+       
+    1: _reexport(patsy.splines)
+       
+    1: import patsy.mgcv_cubic_splines
+       
+    1: _reexport(patsy.mgcv_cubic_splines)
+       
+       # XX FIXME: we aren't exporting any of the explicit parsing interface
+       # yet. Need to figure out how to do that.

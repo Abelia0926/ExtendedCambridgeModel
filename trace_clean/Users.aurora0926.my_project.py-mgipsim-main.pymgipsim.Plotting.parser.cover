@@ -1,0 +1,86 @@
+    1: import argparse
+    1: from pymgipsim.Interface.Messages.parser_colors import color_help_text, color_group_header_text
+       
+       
+    1: def generate_plot_parser(parent_parser = [], add_help = True):
+       
+    2:         parser = argparse.ArgumentParser(
+    1:                                         prog = 'Plots',
+    1:                                         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    1:                                         parents=parent_parser,
+    1:                                         add_help=add_help
+                                               )
+       
+    1:         plot_group = parser.add_argument_group(title = color_group_header_text('Specific Plots'))
+    2:         plot_group.add_argument('-pbg',
+    1:                                                         '--blood-glucose',
+    1:                                                         dest = 'plot_blood_glucose',
+    1:                                                         help = color_help_text('Display population blood glucose concentration.'),
+    1:                                                         action = 'store_true'
+                                                               )
+       
+    2:         plot_group.add_argument('-pas',
+    1:                                                         '--all-states',
+    1:                                                         dest = 'plot_all_states',
+    1:                                                         help = color_help_text('Display all models states.'),
+    1:                                                         action = 'store_true'
+                                                               )
+               
+    2:         plot_group.add_argument('-pis',
+    1:                                                         '--input_signals',
+    1:                                                         dest = 'plot_input_signals',
+    1:                                                         help = color_help_text('Display all models input signals.'),
+    1:                                                         action = 'store_true'
+                                                               )
+       
+       
+    2:         plot_group.add_argument('-pat',
+    1:                                                         '--patient',
+    1:                                                         dest = 'plot_patient',
+    1:                                                         type=int,
+    1:                                                         help = color_help_text('Display blood glucose and inputs for a single subject.')
+                                                               )
+       
+    2:         plot_group.add_argument('-pa',
+    1:                                                         '--all',
+    1:                                                         dest = 'plot_all',
+    1:                                                         action = 'store_true',
+    1:                                                         help = color_help_text('Display all plots.')
+       
+                                                               )
+       
+    2:         plot_group.add_argument('-pbw',
+    1:                                                         '--body-weight',
+    1:                                                         dest = 'plot_body_weight',
+    1:                                                         help = color_help_text('Display body weight.'),
+    1:                                                         action = 'store_true'
+                                                               )
+       
+               
+    1:         plot_options_group = parser.add_argument_group(title = color_group_header_text('Plot Design Options'))
+    1:         plot_options_group.add_argument('-fis', '--fig-size', dest='figsize', nargs = 2, default = [12, 6], type = int, help = color_help_text('Set figure size (width, height'))
+    1:         plot_options_group.add_argument('-c', '--color', dest='color', choices = ['blue', 'orange', 'red', 'green', 'black'], default = 'blue', type = str, help = color_help_text('Set line color'))
+       
+       
+    1:         return parser
+       
+       
+    1: def generate_plot_parser_multiscale(parent_parser = [], add_help = True):
+       
+               parser = argparse.ArgumentParser(
+                                               prog = 'Plots',
+                                               formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+                                               parents=parent_parser,
+                                               add_help=add_help
+                                               )
+       
+               plot_group = parser.add_argument_group(title = color_group_header_text('Specific Plots'))
+       
+               plot_group.add_argument('-pbw',
+                                                               '--body-weight',
+                                                               dest = 'plot_body_weight',
+                                                               help = color_help_text('Display body weight.'),
+                                                               action = 'store_true'
+                                                               )
+               
+               return parser

@@ -1,0 +1,73 @@
+    1: from ctypes import c_uint
+       
+    1: from llvmlite.binding import ffi
+       
+       
+    1: def initialize():
+           """
+           Initialize the LLVM core.
+           """
+    1:     ffi.lib.LLVMPY_InitializeCore()
+       
+       
+    1: def initialize_all_targets():
+           """
+           Initialize all targets. Necessary before targets can be looked up
+           via the :class:`Target` class.
+           """
+           ffi.lib.LLVMPY_InitializeAllTargetInfos()
+           ffi.lib.LLVMPY_InitializeAllTargets()
+           ffi.lib.LLVMPY_InitializeAllTargetMCs()
+       
+       
+    1: def initialize_all_asmprinters():
+           """
+           Initialize all code generators. Necessary before generating
+           any assembly or machine code via the :meth:`TargetMachine.emit_object`
+           and :meth:`TargetMachine.emit_assembly` methods.
+           """
+           ffi.lib.LLVMPY_InitializeAllAsmPrinters()
+       
+       
+    1: def initialize_native_target():
+           """
+           Initialize the native (host) target.  Necessary before doing any
+           code generation.
+           """
+    1:     ffi.lib.LLVMPY_InitializeNativeTarget()
+       
+       
+    1: def initialize_native_asmprinter():
+           """
+           Initialize the native ASM printer.
+           """
+    1:     ffi.lib.LLVMPY_InitializeNativeAsmPrinter()
+       
+       
+    1: def initialize_native_asmparser():
+           """
+           Initialize the native ASM parser.
+           """
+           ffi.lib.LLVMPY_InitializeNativeAsmParser()
+       
+       
+    1: def shutdown():
+           ffi.lib.LLVMPY_Shutdown()
+       
+       
+       # =============================================================================
+       # Set function FFI
+       
+    1: ffi.lib.LLVMPY_GetVersionInfo.restype = c_uint
+       
+       
+    1: def _version_info():
+    1:     v = []
+    1:     x = ffi.lib.LLVMPY_GetVersionInfo()
+    4:     while x:
+    3:         v.append(x & 0xff)
+    3:         x >>= 8
+    1:     return tuple(reversed(v))
+       
+       
+    1: llvm_version_info = _version_info()

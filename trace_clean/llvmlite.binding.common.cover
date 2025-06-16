@@ -1,0 +1,34 @@
+    1: import atexit
+       
+       
+    1: def _encode_string(s):
+  677:     encoded = s.encode('utf-8')
+  677:     return encoded
+       
+       
+    1: def _decode_string(b):
+ 1711:     return b.decode('utf-8')
+       
+       
+    1: _encode_string.__doc__ = """Encode a string for use by LLVM."""
+    1: _decode_string.__doc__ = """Decode a LLVM character (byte)string."""
+       
+       
+    1: _shutting_down = [False]
+       
+       
+    1: def _at_shutdown():
+           _shutting_down[0] = True
+       
+       
+    1: atexit.register(_at_shutdown)
+       
+       
+    1: def _is_shutting_down(_shutting_down=_shutting_down):
+           """
+           Whether the interpreter is currently shutting down.
+           For use in finalizers, __del__ methods, and similar; it is advised
+           to early bind this function rather than look it up when calling it,
+           since at shutdown module globals may be cleared.
+           """
+ 3334:     return _shutting_down[0]

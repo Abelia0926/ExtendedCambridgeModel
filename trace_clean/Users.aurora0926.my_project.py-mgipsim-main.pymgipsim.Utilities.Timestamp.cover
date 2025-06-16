@@ -1,0 +1,54 @@
+    1: import datetime
+    1: import calendar as cal
+       
+       
+    2: class Timestamp:
+       
+    1:     def __init__(self):
+    5:         self.DATETIME_FORMAT: str = '%d-%m-%Y %H:%M:%S'
+       
+    2:     @property
+    2:     def as_unix(self):
+    6:         return self._unix
+       
+    2:     @as_unix.setter
+    2:     def as_unix(self, timestamp):
+    4:         self._unix = timestamp
+    4:         try:
+ 4327:             self._datetime = [datetime.datetime.fromtimestamp(x*60,datetime.UTC) for x in self._unix]
+ 4326:             self._str = [x.strftime(self.DATETIME_FORMAT) for x in self._datetime]
+    1:         except:
+    1:             self._datetime = datetime.datetime.fromtimestamp(self._unix*60,datetime.UTC)
+    1:             self._str = self._datetime.strftime(self.DATETIME_FORMAT)
+       
+    2:     @property
+    2:     def as_str(self):
+               return self._str
+       
+    2:     @as_str.setter
+    2:     def as_str(self, timestamp):
+               self._str = timestamp
+               try:
+                   self._datetime = [datetime.datetime.strptime(x, self.DATETIME_FORMAT) for x in timestamp]
+                   self._unix = [cal.timegm(datetime.datetime.strptime(x, self.DATETIME_FORMAT).timetuple()) / 60.0 for x in timestamp]
+               except ValueError:
+                   raise ValueError("Incorrect date format, should be %d-%m-%Y %H:%M:%S or int [minutes]")
+               except TypeError:
+                   self._datetime = datetime.datetime.strptime(timestamp, self.DATETIME_FORMAT)
+                   self._unix = cal.timegm(datetime.datetime.strptime(timestamp, self.DATETIME_FORMAT).timetuple()) / 60.0
+       
+    2:     @property
+    2:     def as_datetime(self):
+               return self._datetime
+       
+    2:     @as_datetime.setter
+    2:     def as_datetime(self, timestamp):
+               try:
+                   self._datetime = timestamp
+                   self._str = [x.strftime(self.DATETIME_FORMAT) for x in self._datetime]
+                   self._unix = [cal.timegm(datetime.datetime.strptime(x, self.DATETIME_FORMAT).timetuple()) / 60.0 for x in self._str]
+               except ValueError:
+                   raise ValueError("Incorrect date format, should be %d-%m-%Y %H:%M:%S or int [minutes]")
+               except TypeError:
+                   self._str = self._datetime.strftime(self.DATETIME_FORMAT)
+                   self._unix = cal.timegm(datetime.datetime.strptime(self._str, self.DATETIME_FORMAT).timetuple()) / 60.0

@@ -1,0 +1,64 @@
+    1: from llvmlite.ir import CallInstr
+       
+       
+    2: class Visitor(object):
+    1:     def visit(self, module):
+               self._module = module
+               for func in module.functions:
+                   self.visit_Function(func)
+       
+    1:     def visit_Function(self, func):
+   16:         self._function = func
+  204:         for bb in func.blocks:
+  188:             self.visit_BasicBlock(bb)
+       
+    1:     def visit_BasicBlock(self, bb):
+  188:         self._basic_block = bb
+ 1681:         for instr in bb.instructions:
+ 1493:             self.visit_Instruction(instr)
+       
+    1:     def visit_Instruction(self, instr):
+               raise NotImplementedError
+       
+    2:     @property
+    2:     def module(self):
+               return self._module
+       
+    2:     @property
+    2:     def function(self):
+               return self._function
+       
+    2:     @property
+    2:     def basic_block(self):
+               return self._basic_block
+       
+       
+    2: class CallVisitor(Visitor):
+    1:     def visit_Instruction(self, instr):
+ 1493:         if isinstance(instr, CallInstr):
+   18:             self.visit_Call(instr)
+       
+    1:     def visit_Call(self, instr):
+               raise NotImplementedError
+       
+       
+    2: class ReplaceCalls(CallVisitor):
+    1:     def __init__(self, orig, repl):
+               super(ReplaceCalls, self).__init__()
+               self.orig = orig
+               self.repl = repl
+               self.calls = []
+       
+    1:     def visit_Call(self, instr):
+               if instr.callee == self.orig:
+                   instr.replace_callee(self.repl)
+                   self.calls.append(instr)
+       
+       
+    1: def replace_all_calls(mod, orig, repl):
+           """Replace all calls to `orig` to `repl` in module `mod`.
+           Returns the references to the returned calls
+           """
+           rc = ReplaceCalls(orig, repl)
+           rc.visit(mod)
+           return rc.calls

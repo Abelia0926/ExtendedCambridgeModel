@@ -1,0 +1,22 @@
+    1: """
+       Sparse Eigenvalue Solvers
+       -------------------------
+       
+       The submodules of sparse.linalg._eigen:
+           1. lobpcg: Locally Optimal Block Preconditioned Conjugate Gradient Method
+       
+       """
+    1: from .arpack import *
+    1: from .lobpcg import *
+    1: from ._svds import svds
+       
+    1: from . import arpack
+       
+    1: __all__ = [
+           'ArpackError', 'ArpackNoConvergence',
+           'eigs', 'eigsh', 'lobpcg', 'svds'
+       ]
+       
+    1: from scipy._lib._testutils import PytestTester
+    1: test = PytestTester(__name__)
+    1: del PytestTester

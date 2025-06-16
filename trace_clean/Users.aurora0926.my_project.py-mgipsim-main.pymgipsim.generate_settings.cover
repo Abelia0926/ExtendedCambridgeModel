@@ -1,0 +1,50 @@
+    1: import argparse
+    1: import numpy as np
+    1: import os
+    1: from pymgipsim.Utilities.paths import default_settings_path, results_path
+    1: from pymgipsim.Settings.parser import generate_settings_parser
+    1: from pymgipsim.Utilities import simulation_folder
+    1: from pymgipsim.Utilities.Scenario import scenario, load_scenario, save_scenario
+    1: from pymgipsim.Utilities.Timestamp import Timestamp
+    1: from dataclasses import asdict
+       # Defines the random seed using the default seed
+       
+    1: def generate_simulation_settings_main(scenario_instance: scenario, args: argparse.Namespace, results_folder_path: str) -> scenario:
+       
+           """
+           This is used to generate the simulation settings.
+           """
+    1:     if not args.no_print:
+    1:         print(f">>>>> Generating Simulation Settings")
+       
+           # pbar = tqdm.tqdm(total = 2, disable = args.no_progress_bar)
+       
+    1:     end_time = Timestamp()
+    1:     end_time.as_unix = args.number_of_days * 24 * 60
+       
+    1:     scenario_instance.settings.sampling_time = args.sampling_time
+    1:     scenario_instance.settings.start_time = 0
+    1:     scenario_instance.settings.end_time = end_time.as_unix
+    1:     scenario_instance.settings.random_seed = args.random_seed
+    1:     scenario_instance.settings.random_state = np.random.default_rng(args.random_seed).bit_generator.state
+    1:     if args.multi_scale:
+               scenario_instance.settings.simulator_name = "MultiScaleSolver"
+           else:
+    1:         scenario_instance.settings.simulator_name = "SingleScaleSolver"
+       
+    1:     save_scenario(os.path.join(results_folder_path, "simulation_settings.json"), asdict(scenario_instance))
+       
+    1:     return scenario_instance
+       
+    1: if __name__ == '__main__':
+       
+           default_scenario = load_scenario(os.path.join(default_settings_path, "scenario_default.json"))
+       
+           """ Define Results Path """
+           _, _, _, results_folder_path = simulation_folder.create_simulation_results_folder(results_path)
+       
+           """ Parse Arguments  """
+           parser = generate_settings_parser(add_help = True)
+           args = parser.parse_args()
+       
+           scenario_instance = generate_simulation_settings_main(args = args, scenario_instance = default_scenario, results_folder_path = results_folder_path)

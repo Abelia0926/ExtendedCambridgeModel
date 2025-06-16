@@ -1,0 +1,691 @@
+    1: import warnings
+       
+    1: import numpy as np
+    1: import operator
+       
+    1: from numba.core import types, utils, config
+    1: from numba.core.typing.templates import (AttributeTemplate, AbstractTemplate,
+                                                CallableTemplate, Registry, signature)
+       
+    1: from numba.np.numpy_support import (ufunc_find_matching_loop,
+                                    supported_ufunc_loop, as_dtype,
+                                    from_dtype, as_dtype, resolve_output_type,
+                                    carray, farray, _ufunc_loop_sig)
+    1: from numba.core.errors import (TypingError, NumbaPerformanceWarning,
+                                      NumbaTypeError, NumbaAssertionError)
+    1: from numba import pndindex
+       
+    1: registry = Registry()
+    1: infer = registry.register
+    1: infer_global = registry.register_global
+    1: infer_getattr = registry.register_attr
+       
+       
+    2: class Numpy_rules_ufunc(AbstractTemplate):
+    2:     @classmethod
+    2:     def _handle_inputs(cls, ufunc, args, kws):
+               """
+               Process argument types to a given *ufunc*.
+               Returns a (base types, explicit outputs, ndims, layout) tuple where:
+               - `base types` is a tuple of scalar types for each input
+               - `explicit outputs` is a tuple of explicit output types (arrays)
+               - `ndims` is the number of dimensions of the loop and also of
+                 any outputs, explicit or implicit
+               - `layout` is the layout for any implicit output to be allocated
+               """
+  340:         nin = ufunc.nin
+  340:         nout = ufunc.nout
+  340:         nargs = ufunc.nargs
+       
+               # preconditions
+  340:         assert nargs == nin + nout
+       
+  340:         if len(args) < nin:
+                   msg = "ufunc '{0}': not enough arguments ({1} found, {2} required)"
+                   raise TypingError(msg=msg.format(ufunc.__name__, len(args), nin))
+       
+  340:         if len(args) > nargs:
+                   msg = "ufunc '{0}': too many arguments ({1} found, {2} maximum)"
+                   raise TypingError(msg=msg.format(ufunc.__name__, len(args), nargs))
+       
+ 2360:         args = [a.as_array if isinstance(a, types.ArrayCompatible) else a
+ 1010:                 for a in args]
+ 2360:         arg_ndims = [a.ndim if isinstance(a, types.ArrayCompatible) else 0
+ 1010:                      for a in args]
+  340:         ndims = max(arg_ndims)
+       
+               # explicit outputs must be arrays (no explicit scalar return values supported)
+  340:         explicit_outputs = args[nin:]
+       
+               # all the explicit outputs must match the number max number of dimensions
+  680:         if not all(d == ndims for d in arg_ndims[nin:]):
+                   msg = "ufunc '{0}' called with unsuitable explicit output arrays."
+                   raise TypingError(msg=msg.format(ufunc.__name__))
+       
+ 1020:         if not all(isinstance(output, types.ArrayCompatible)
+  340:                    for output in explicit_outputs):
+                   msg = "ufunc '{0}' called with an explicit output that is not an array"
+                   raise TypingError(msg=msg.format(ufunc.__name__))
+       
+  680:         if not all(output.mutable for output in explicit_outputs):
+                   msg = "ufunc '{0}' called with an explicit output that is read-only"
+                   raise TypingError(msg=msg.format(ufunc.__name__))
+       
+               # find the kernel to use, based only in the input types (as does NumPy)
+ 2360:         base_types = [x.dtype if isinstance(x, types.ArrayCompatible) else x
+ 1010:                       for x in args]
+       
+               # Figure out the output array layout, if needed.
+  340:         layout = None
+  340:         if ndims > 0 and (len(explicit_outputs) < ufunc.nout):
+    8:             layout = 'C'
+   56:             layouts = [x.layout if isinstance(x, types.ArrayCompatible) else ''
+   24:                        for x in args]
+       
+                   # Prefer C contig if any array is C contig.
+                   # Next, prefer F contig.
+                   # Defaults to C contig if not layouts are C/F.
+    8:             if 'C' not in layouts and 'F' in layouts:
+                       layout = 'F'
+       
+  340:         return base_types, explicit_outputs, ndims, layout
+       
+    2:     @property
+    2:     def ufunc(self):
+   22:         return self.key
+       
+    1:     def generic(self, args, kws):
+               # First, strip optional types, ufunc loops are typed on concrete types
+ 1350:         args = [x.type if isinstance(x, types.Optional) else x for x in args]
+       
+  340:         ufunc = self.ufunc
+  680:         base_types, explicit_outputs, ndims, layout = self._handle_inputs(
+  340:             ufunc, args, kws)
+  340:         ufunc_loop = ufunc_find_matching_loop(ufunc, base_types)
+  340:         if ufunc_loop is None:
+                   raise TypingError("can't resolve ufunc {0} for types {1}".format(ufunc.__name__, args))
+       
+               # check if all the types involved in the ufunc loop are supported in this mode
+  340:         if not supported_ufunc_loop(ufunc, ufunc_loop):
+                   msg = "ufunc '{0}' using the loop '{1}' not supported in this mode"
+                   raise TypingError(msg=msg.format(ufunc.__name__, ufunc_loop.ufunc_sig))
+       
+               # if there is any explicit output type, check that it is valid
+  680:         explicit_outputs_np = [as_dtype(tp.dtype) for tp in explicit_outputs]
+       
+               # Numpy will happily use unsafe conversions (although it will actually warn)
+ 1020:         if not all (np.can_cast(fromty, toty, 'unsafe') for (fromty, toty) in
+  340:                     zip(ufunc_loop.numpy_outputs, explicit_outputs_np)):
+                   msg = "ufunc '{0}' can't cast result to explicit result type"
+                   raise TypingError(msg=msg.format(ufunc.__name__))
+       
+               # A valid loop was found that is compatible. The result of type inference should
+               # be based on the explicit output types, and when not available with the type given
+               # by the selected NumPy loop
+  340:         out = list(explicit_outputs)
+  340:         implicit_output_count = ufunc.nout - len(explicit_outputs)
+  340:         if implicit_output_count > 0:
+                   # XXX this is sometimes wrong for datetime64 and timedelta64,
+                   # as ufunc_find_matching_loop() doesn't do any type inference
+  340:             ret_tys = ufunc_loop.outputs[-implicit_output_count:]
+  340:             if ndims > 0:
+    8:                 assert layout is not None
+                       # If either of the types involved in the ufunc operation have a
+                       # __array_ufunc__ method then invoke the first such one to
+                       # determine the output type of the ufunc.
+    8:                 array_ufunc_type = None
+   24:                 for a in args:
+   16:                     if hasattr(a, "__array_ufunc__"):
+                               array_ufunc_type = a
+                               break
+    8:                 output_type = types.Array
+    8:                 if array_ufunc_type is not None:
+                           output_type = array_ufunc_type.__array_ufunc__(ufunc, "__call__", *args, **kws)
+                           if output_type is NotImplemented:
+                               msg = (f"unsupported use of ufunc {ufunc} on "
+                                      f"{array_ufunc_type}")
+                               # raise TypeError here because
+                               # NumpyRulesArrayOperator.generic is capturing
+                               # TypingError
+                               raise NumbaTypeError(msg)
+                           elif not issubclass(output_type, types.Array):
+                               msg = (f"ufunc {ufunc} on {array_ufunc_type}"
+                                      f"cannot return non-array {output_type}")
+                               # raise TypeError here because
+                               # NumpyRulesArrayOperator.generic is capturing
+                               # TypingError
+                               raise TypeError(msg)
+       
+   40:                 ret_tys = [output_type(dtype=ret_ty, ndim=ndims, layout=layout)
+   16:                            for ret_ty in ret_tys]
+   40:                 ret_tys = [resolve_output_type(self.context, args, ret_ty)
+   16:                            for ret_ty in ret_tys]
+  340:             out.extend(ret_tys)
+       
+  340:         return _ufunc_loop_sig(out, args)
+       
+       
+    2: class NumpyRulesArrayOperator(Numpy_rules_ufunc):
+   19:     _op_map = {
+    1:         operator.add: "add",
+    1:         operator.sub: "subtract",
+    1:         operator.mul: "multiply",
+    1:         operator.truediv: "true_divide",
+    1:         operator.floordiv: "floor_divide",
+    1:         operator.mod: "remainder",
+    1:         operator.pow: "power",
+    1:         operator.lshift: "left_shift",
+    1:         operator.rshift: "right_shift",
+    1:         operator.and_: "bitwise_and",
+    1:         operator.or_: "bitwise_or",
+    1:         operator.xor: "bitwise_xor",
+    1:         operator.eq: "equal",
+    1:         operator.gt: "greater",
+    1:         operator.ge: "greater_equal",
+    1:         operator.lt: "less",
+    1:         operator.le: "less_equal",
+    1:         operator.ne: "not_equal",
+           }
+       
+    2:     @property
+    2:     def ufunc(self):
+  318:         return getattr(np, self._op_map[self.key])
+       
+    2:     @classmethod
+    2:     def install_operations(cls):
+   36:         for op, ufunc_name in cls._op_map.items():
+   66:             infer_global(op)(
+   33:                 type("NumpyRulesArrayOperator_" + ufunc_name, (cls,), dict(key=op))
+                   )
+       
+    1:     def generic(self, args, kws):
+               '''Overloads and calls base class generic() method, returning
+               None if a TypingError occurred.
+       
+               Returning None for operators is important since operators are
+               heavily overloaded, and by suppressing type errors, we allow
+               type inference to check other possibilities before giving up
+               (particularly user-defined operators).
+               '''
+  318:         try:
+  318:             sig = super(NumpyRulesArrayOperator, self).generic(args, kws)
+               except TypingError:
+                   return None
+  318:         if sig is None:
+                   return None
+  318:         args = sig.args
+               # Only accept at least one array argument, otherwise the operator
+               # doesn't involve Numpy's ufunc machinery.
+ 2210:         if not any(isinstance(arg, types.ArrayCompatible)
+  950:                    for arg in args):
+  310:             return None
+    8:         return sig
+       
+       
+    1: _binop_map = NumpyRulesArrayOperator._op_map
+       
+    2: class NumpyRulesInplaceArrayOperator(NumpyRulesArrayOperator):
+    1:     _op_map = {
+    1:         operator.iadd: "add",
+    1:         operator.isub: "subtract",
+    1:         operator.imul: "multiply",
+    1:         operator.itruediv: "true_divide",
+    1:         operator.ifloordiv: "floor_divide",
+    1:         operator.imod: "remainder",
+    1:         operator.ipow: "power",
+    1:         operator.ilshift: "left_shift",
+    1:         operator.irshift: "right_shift",
+    1:         operator.iand: "bitwise_and",
+    1:         operator.ior: "bitwise_or",
+    1:         operator.ixor: "bitwise_xor",
+           }
+       
+    1:     def generic(self, args, kws):
+               # Type the inplace operator as if an explicit output was passed,
+               # to handle type resolution correctly.
+               # (for example int8[:] += int16[:] should use an int8[:] output,
+               #  not int16[:])
+   24:         lhs, rhs = args
+   24:         if not isinstance(lhs, types.ArrayCompatible):
+   24:             return
+               args = args + (lhs,)
+               sig = super(NumpyRulesInplaceArrayOperator, self).generic(args, kws)
+               # Strip off the fake explicit output
+               assert len(sig.args) == 3
+               real_sig = signature(sig.return_type, *sig.args[:2])
+               return real_sig
+       
+       
+    2: class NumpyRulesUnaryArrayOperator(NumpyRulesArrayOperator):
+    1:     _op_map = {
+    1:         operator.pos: "positive",
+    1:         operator.neg: "negative",
+    1:         operator.invert: "invert",
+           }
+       
+    1:     def generic(self, args, kws):
+   18:         assert not kws
+   18:         if len(args) == 1 and isinstance(args[0], types.ArrayCompatible):
+                   return super(NumpyRulesUnaryArrayOperator, self).generic(args, kws)
+       
+       
+       # list of unary ufuncs to register
+       
+    1: math_operations = [ "add", "subtract", "multiply",
+                           "logaddexp", "logaddexp2", "true_divide",
+                           "floor_divide", "negative", "positive", "power",
+                           "float_power", "remainder", "fmod", "absolute",
+                           "rint", "sign", "conjugate", "exp", "exp2",
+                           "log", "log2", "log10", "expm1", "log1p",
+                           "sqrt", "square", "cbrt", "reciprocal",
+                           "divide", "mod", "divmod", "abs", "fabs" , "gcd", "lcm"]
+       
+    1: trigonometric_functions = [ "sin", "cos", "tan", "arcsin",
+                                   "arccos", "arctan", "arctan2",
+                                   "hypot", "sinh", "cosh", "tanh",
+                                   "arcsinh", "arccosh", "arctanh",
+                                   "deg2rad", "rad2deg", "degrees",
+                                   "radians" ]
+       
+    1: bit_twiddling_functions = ["bitwise_and", "bitwise_or",
+                                  "bitwise_xor", "invert",
+                                  "left_shift", "right_shift",
+                                  "bitwise_not" ]
+       
+    1: comparison_functions = [ "greater", "greater_equal", "less",
+                                "less_equal", "not_equal", "equal",
+                                "logical_and", "logical_or",
+                                "logical_xor", "logical_not",
+                                "maximum", "minimum", "fmax", "fmin" ]
+       
+    1: floating_functions = [ "isfinite", "isinf", "isnan", "signbit",
+                              "copysign", "nextafter", "modf", "ldexp",
+                              "frexp", "floor", "ceil", "trunc",
+                              "spacing" ]
+       
+    1: logic_functions = [ "isnat" ]
+       
+       
+       # This is a set of the ufuncs that are not yet supported by Lowering. In order
+       # to trigger no-python mode we must not register them until their Lowering is
+       # implemented.
+       #
+       # It also works as a nice TODO list for ufunc support :)
+    2: _unsupported = set([ 'frexp',
+    1:                      'modf',
+                        ])
+       
+       
+    1: def register_numpy_ufunc(name, register_global=infer_global):
+   86:     func = getattr(np, name)
+  172:     class typing_class(Numpy_rules_ufunc):
+   86:         key = func
+       
+   86:     typing_class.__name__ = "resolve_{0}".format(name)
+       
+           # A list of ufuncs that are in fact aliases of other ufuncs. They need to
+           # insert the resolve method, but not register the ufunc itself
+   86:     aliases = ("abs", "bitwise_not", "divide", "abs")
+       
+   86:     if name not in aliases:
+   83:         register_global(func, types.Function(typing_class))
+       
+    3: all_ufuncs = sum([math_operations, trigonometric_functions,
+    1:                   bit_twiddling_functions, comparison_functions,
+    2:                   floating_functions, logic_functions], [])
+       
+   90: supported_ufuncs = [x for x in all_ufuncs if x not in _unsupported]
+       
+   87: for func in supported_ufuncs:
+   86:     register_numpy_ufunc(func)
+       
+   90: all_ufuncs = [getattr(np, name) for name in all_ufuncs]
+   88: supported_ufuncs = [getattr(np, name) for name in supported_ufuncs]
+       
+    1: NumpyRulesUnaryArrayOperator.install_operations()
+    1: NumpyRulesArrayOperator.install_operations()
+    1: NumpyRulesInplaceArrayOperator.install_operations()
+       
+    3: supported_array_operators = set(
+    1:     NumpyRulesUnaryArrayOperator._op_map.keys()
+    2: ).union(
+    1:     NumpyRulesArrayOperator._op_map.keys()
+    2: ).union(
+    1:     NumpyRulesInplaceArrayOperator._op_map.keys()
+       )
+       
+    1: del _unsupported
+       
+       
+       # -----------------------------------------------------------------------------
+       # Install global helpers for array methods.
+       
+    2: class Numpy_method_redirection(AbstractTemplate):
+    1:     """
+           A template redirecting a Numpy global function (e.g. np.sum) to an
+           array method of the same name (e.g. ndarray.sum).
+           """
+       
+           # Arguments like *axis* can specialize on literals but also support
+           # non-literals
+    1:     prefer_literal = True
+       
+    1:     def generic(self, args, kws):
+               pysig = None
+               if kws:
+                   if self.method_name == 'sum':
+                       if 'axis' in kws and 'dtype' not in kws:
+                           def sum_stub(arr, axis):
+                               pass
+                           pysig = utils.pysignature(sum_stub)
+                       elif 'dtype' in kws and 'axis' not in kws:
+                           def sum_stub(arr, dtype):
+                               pass
+                           pysig = utils.pysignature(sum_stub)
+                       elif 'dtype' in kws and 'axis' in kws:
+                           def sum_stub(arr, axis, dtype):
+                               pass
+                           pysig = utils.pysignature(sum_stub)
+                   elif self.method_name == 'argsort':
+                       def argsort_stub(arr, kind='quicksort'):
+                           pass
+                       pysig = utils.pysignature(argsort_stub)
+                   else:
+                       fmt = "numba doesn't support kwarg for {}"
+                       raise TypingError(fmt.format(self.method_name))
+       
+               arr = args[0]
+               # This will return a BoundFunction
+               meth_ty = self.context.resolve_getattr(arr, self.method_name)
+               # Resolve arguments on the bound function
+               meth_sig = self.context.resolve_function_type(meth_ty, args[1:], kws)
+               if meth_sig is not None:
+                   return meth_sig.as_function().replace(pysig=pysig)
+       
+       
+       # Function to glue attributes onto the numpy-esque object
+    1: def _numpy_redirect(fname):
+    4:     numpy_function = getattr(np, fname)
+    8:     cls = type("Numpy_redirect_{0}".format(fname), (Numpy_method_redirection,),
+    4:                dict(key=numpy_function, method_name=fname))
+    4:     infer_global(numpy_function, types.Function(cls))
+       
+       
+    5: for func in ['sum', 'argsort', 'nonzero', 'ravel']:
+    4:     _numpy_redirect(func)
+       
+       
+       # -----------------------------------------------------------------------------
+       # Numpy scalar constructors
+       
+       # Register np.int8, etc. as converters to the equivalent Numba types
+   14: np_types = set(getattr(np, str(nb_type)) for nb_type in types.number_domain)
+    1: np_types.add(np.bool_)
+       # Those may or may not be aliases (depending on the Numpy build / version)
+    1: np_types.add(np.intc)
+    1: np_types.add(np.intp)
+    1: np_types.add(np.uintc)
+    1: np_types.add(np.uintp)
+       
+       
+    1: def register_number_classes(register_global):
+   14:     for np_type in np_types:
+   13:         nb_type = getattr(types, np_type.__name__)
+       
+   13:         register_global(np_type, types.NumberClass(nb_type))
+       
+       
+    1: register_number_classes(infer_global)
+       
+       
+       # -----------------------------------------------------------------------------
+       # Numpy array constructors
+       
+    1: def parse_shape(shape):
+           """
+           Given a shape, return the number of dimensions.
+           """
+    1:     ndim = None
+    1:     if isinstance(shape, types.Integer):
+               ndim = 1
+    1:     elif isinstance(shape, (types.Tuple, types.UniTuple)):
+    1:         int_tys = (types.Integer, types.IntEnumMember)
+    4:         if all(isinstance(s, int_tys) for s in shape):
+    1:             ndim = len(shape)
+    1:     return ndim
+       
+    1: def parse_dtype(dtype):
+           """
+           Return the dtype of a type, if it is either a DtypeSpec (used for most
+           dtypes) or a TypeRef (used for record types).
+           """
+           if isinstance(dtype, types.DTypeSpec):
+               return dtype.dtype
+           elif isinstance(dtype, types.TypeRef):
+               return dtype.instance_type
+           elif isinstance(dtype, types.StringLiteral):
+               dtstr = dtype.literal_value
+               try:
+                   dt = np.dtype(dtstr)
+               except TypeError:
+                   msg = f"Invalid NumPy dtype specified: '{dtstr}'"
+                   raise TypingError(msg)
+               return from_dtype(dt)
+       
+    1: def _parse_nested_sequence(context, typ):
+           """
+           Parse a (possibly 0d) nested sequence type.
+           A (ndim, dtype) tuple is returned.  Note the sequence may still be
+           heterogeneous, as long as it converts to the given dtype.
+           """
+           if isinstance(typ, (types.Buffer,)):
+               raise TypingError("%s not allowed in a homogeneous sequence" % typ)
+           elif isinstance(typ, (types.Sequence,)):
+               n, dtype = _parse_nested_sequence(context, typ.dtype)
+               return n + 1, dtype
+           elif isinstance(typ, (types.BaseTuple,)):
+               if typ.count == 0:
+                   # Mimic Numpy's behaviour
+                   return 1, types.float64
+               n, dtype = _parse_nested_sequence(context, typ[0])
+               dtypes = [dtype]
+               for i in range(1, typ.count):
+                   _n, dtype = _parse_nested_sequence(context, typ[i])
+                   if _n != n:
+                       raise TypingError("type %s does not have a regular shape"
+                                         % (typ,))
+                   dtypes.append(dtype)
+               dtype = context.unify_types(*dtypes)
+               if dtype is None:
+                   raise TypingError("cannot convert %s to a homogeneous type" % typ)
+               return n + 1, dtype
+           else:
+               # Scalar type => check it's valid as a Numpy array dtype
+               as_dtype(typ)
+               return 0, typ
+       
+       
+    1: def _infer_dtype_from_inputs(inputs):
+           return dtype
+       
+       
+    1: def _homogeneous_dims(context, func_name, arrays):
+           ndim = arrays[0].ndim
+           for a in arrays:
+               if a.ndim != ndim:
+                   msg = (f"{func_name}(): all the input arrays must have same number "
+                          "of dimensions")
+                   raise NumbaTypeError(msg)
+           return ndim
+       
+    1: def _sequence_of_arrays(context, func_name, arrays,
+    1:                         dim_chooser=_homogeneous_dims):
+           if (not isinstance(arrays, types.BaseTuple)
+               or not len(arrays)
+               or not all(isinstance(a, types.Array) for a in arrays)):
+               raise TypeError("%s(): expecting a non-empty tuple of arrays, "
+                               "got %s" % (func_name, arrays))
+       
+           ndim = dim_chooser(context, func_name, arrays)
+       
+           dtype = context.unify_types(*(a.dtype for a in arrays))
+           if dtype is None:
+               raise TypeError("%s(): input arrays must have "
+                               "compatible dtypes" % func_name)
+       
+           return dtype, ndim
+       
+    1: def _choose_concatenation_layout(arrays):
+           # Only create a F array if all input arrays have F layout.
+           # This is a simplified version of Numpy's behaviour,
+           # while Numpy's actually processes the input strides to
+           # decide on optimal output strides
+           # (see PyArray_CreateMultiSortedStridePerm()).
+           return 'F' if all(a.layout == 'F' for a in arrays) else 'C'
+       
+       
+    2: class BaseStackTemplate(CallableTemplate):
+       
+    1:     def generic(self):
+               def typer(arrays):
+                   dtype, ndim = _sequence_of_arrays(self.context,
+                                                     self.func_name, arrays)
+       
+                   ndim = max(ndim, self.ndim_min)
+                   layout = _choose_concatenation_layout(arrays)
+       
+                   return types.Array(dtype, ndim, layout)
+       
+               return typer
+       
+       
+       # -----------------------------------------------------------------------------
+       # Linear algebra
+       
+       
+    2: class MatMulTyperMixin(object):
+       
+    1:     def matmul_typer(self, a, b, out=None):
+               """
+               Typer function for Numpy matrix multiplication.
+               """
+               if not isinstance(a, types.Array) or not isinstance(b, types.Array):
+                   return
+               if not all(x.ndim in (1, 2) for x in (a, b)):
+                   raise TypingError("%s only supported on 1-D and 2-D arrays"
+                                     % (self.func_name, ))
+               # Output dimensionality
+               ndims = set([a.ndim, b.ndim])
+               if ndims == set([2]):
+                   # M * M
+                   out_ndim = 2
+               elif ndims == set([1, 2]):
+                   # M* V and V * M
+                   out_ndim = 1
+               elif ndims == set([1]):
+                   # V * V
+                   out_ndim = 0
+       
+               if out is not None:
+                   if out_ndim == 0:
+                       raise TypeError("explicit output unsupported for vector * vector")
+                   elif out.ndim != out_ndim:
+                       raise TypeError("explicit output has incorrect dimensionality")
+                   if not isinstance(out, types.Array) or out.layout != 'C':
+                       raise TypeError("output must be a C-contiguous array")
+                   all_args = (a, b, out)
+               else:
+                   all_args = (a, b)
+       
+               if not (config.DISABLE_PERFORMANCE_WARNINGS or
+                       all(x.layout in 'CF' for x in (a, b))):
+                   msg = ("%s is faster on contiguous arrays, called on %s" %
+                          (self.func_name, (a, b)))
+                   warnings.warn(NumbaPerformanceWarning(msg))
+               if not all(x.dtype == a.dtype for x in all_args):
+                   raise TypingError("%s arguments must all have "
+                                     "the same dtype" % (self.func_name,))
+               if not isinstance(a.dtype, (types.Float, types.Complex)):
+                   raise TypingError("%s only supported on "
+                                     "float and complex arrays"
+                                     % (self.func_name,))
+               if out:
+                   return out
+               elif out_ndim > 0:
+                   return types.Array(a.dtype, out_ndim, 'C')
+               else:
+                   return a.dtype
+       
+       
+    1: def _check_linalg_matrix(a, func_name):
+           if not isinstance(a, types.Array):
+               return
+           if not a.ndim == 2:
+               raise TypingError("np.linalg.%s() only supported on 2-D arrays"
+                                 % func_name)
+           if not isinstance(a.dtype, (types.Float, types.Complex)):
+               raise TypingError("np.linalg.%s() only supported on "
+                                 "float and complex arrays" % func_name)
+       
+       # -----------------------------------------------------------------------------
+       # Miscellaneous functions
+       
+    3: @infer_global(np.ndenumerate)
+    2: class NdEnumerate(AbstractTemplate):
+       
+    1:     def generic(self, args, kws):
+               assert not kws
+               arr, = args
+       
+               if isinstance(arr, types.Array):
+                   enumerate_type = types.NumpyNdEnumerateType(arr)
+                   return signature(enumerate_type, *args)
+       
+       
+    3: @infer_global(np.nditer)
+    2: class NdIter(AbstractTemplate):
+       
+    1:     def generic(self, args, kws):
+               assert not kws
+               if len(args) != 1:
+                   return
+               arrays, = args
+       
+               if isinstance(arrays, types.BaseTuple):
+                   if not arrays:
+                       return
+                   arrays = list(arrays)
+               else:
+                   arrays = [arrays]
+               nditerty = types.NumpyNdIterType(arrays)
+               return signature(nditerty, *args)
+       
+       
+    3: @infer_global(pndindex)
+    2: @infer_global(np.ndindex)
+    2: class NdIndex(AbstractTemplate):
+       
+    1:     def generic(self, args, kws):
+               assert not kws
+       
+               # Either ndindex(shape) or ndindex(*shape)
+               if len(args) == 1 and isinstance(args[0], types.BaseTuple):
+                   tup = args[0]
+                   if tup.count > 0 and not isinstance(tup, types.UniTuple):
+                       # Heterogeneous tuple
+                       return
+                   shape = list(tup)
+               else:
+                   shape = args
+       
+               if all(isinstance(x, types.Integer) for x in shape):
+                   iterator_type = types.NumpyNdIndexType(len(shape))
+                   return signature(iterator_type, *args)
+       
+       
+    3: @infer_global(operator.eq)
+    2: class DtypeEq(AbstractTemplate):
+    1:     def generic(self, args, kws):
+   18:         [lhs, rhs] = args
+   18:         if isinstance(lhs, types.DType) and isinstance(rhs, types.DType):
+                   return signature(types.boolean, lhs, rhs)

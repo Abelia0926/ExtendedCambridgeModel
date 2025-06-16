@@ -1,0 +1,777 @@
+    1: import atexit
+    1: import builtins
+    1: import functools
+    1: import inspect
+    1: import os
+    1: import operator
+    1: import timeit
+    1: import math
+    1: import sys
+    1: import traceback
+    1: import weakref
+    1: import warnings
+    1: import threading
+    1: import contextlib
+    1: import typing as _tp
+       
+    1: from types import ModuleType
+    1: from importlib import import_module
+    1: import numpy as np
+       
+    1: from inspect import signature as pysignature # noqa: F401
+    1: from inspect import Signature as pySignature # noqa: F401
+    1: from inspect import Parameter as pyParameter # noqa: F401
+       
+    1: from numba.core.config import (PYVERSION, MACHINE_BITS, # noqa: F401
+                                      DEVELOPER_MODE) # noqa: F401
+    1: from numba.core import config
+    1: from numba.core import types
+       
+    1: from collections.abc import Mapping, Sequence, MutableSet, MutableMapping
+       
+       
+    1: def erase_traceback(exc_value):
+           """
+           Erase the traceback and hanging locals from the given exception instance.
+           """
+  534:     if exc_value.__traceback__ is not None:
+  534:         traceback.clear_frames(exc_value.__traceback__)
+  534:     return exc_value.with_traceback(None)
+       
+       
+    1: def safe_relpath(path, start=os.curdir):
+           """
+           Produces a "safe" relative path, on windows relpath doesn't work across
+           drives as technically they don't share the same root.
+           See: https://bugs.python.org/issue7195 for details.
+           """
+           # find the drive letters for path and start and if they are not the same
+           # then don't use relpath!
+           drive_letter = lambda x: os.path.splitdrive(os.path.abspath(x))[0]
+           drive_path = drive_letter(path)
+           drive_start = drive_letter(start)
+           if drive_path != drive_start:
+               return os.path.abspath(path)
+           else:
+               return os.path.relpath(path, start=start)
+       
+       
+       # Mapping between operator module functions and the corresponding built-in
+       # operators.
+       
+   19: BINOPS_TO_OPERATORS = {
+    1:     '+': operator.add,
+    1:     '-': operator.sub,
+    1:     '*': operator.mul,
+    1:     '//': operator.floordiv,
+    1:     '/': operator.truediv,
+    1:     '%': operator.mod,
+    1:     '**': operator.pow,
+    1:     '&': operator.and_,
+    1:     '|': operator.or_,
+    1:     '^': operator.xor,
+    1:     '<<': operator.lshift,
+    1:     '>>': operator.rshift,
+    1:     '==': operator.eq,
+    1:     '!=': operator.ne,
+    1:     '<': operator.lt,
+    1:     '<=': operator.le,
+    1:     '>': operator.gt,
+    1:     '>=': operator.ge,
+    1:     'is': operator.is_,
+    1:     'is not': operator.is_not,
+           # This one has its args reversed!
+    1:     'in': operator.contains,
+    1:     '@': operator.matmul,
+       }
+       
+    1: INPLACE_BINOPS_TO_OPERATORS = {
+    1:     '+=': operator.iadd,
+    1:     '-=': operator.isub,
+    1:     '*=': operator.imul,
+    1:     '//=': operator.ifloordiv,
+    1:     '/=': operator.itruediv,
+    1:     '%=': operator.imod,
+    1:     '**=': operator.ipow,
+    1:     '&=': operator.iand,
+    1:     '|=': operator.ior,
+    1:     '^=': operator.ixor,
+    1:     '<<=': operator.ilshift,
+    1:     '>>=': operator.irshift,
+    1:     '@=': operator.imatmul,
+       }
+       
+       
+    2: ALL_BINOPS_TO_OPERATORS = {**BINOPS_TO_OPERATORS,
+    1:                            **INPLACE_BINOPS_TO_OPERATORS}
+       
+       
+    1: UNARY_BUITINS_TO_OPERATORS = {
+    1:     '+': operator.pos,
+    1:     '-': operator.neg,
+    1:     '~': operator.invert,
+    1:     'not': operator.not_,
+    1:     'is_true': operator.truth
+       }
+       
+   36: OPERATORS_TO_BUILTINS = {
+    1:     operator.add: '+',
+    1:     operator.iadd: '+=',
+    1:     operator.sub: '-',
+    1:     operator.isub: '-=',
+    1:     operator.mul: '*',
+    1:     operator.imul: '*=',
+    1:     operator.floordiv: '//',
+    1:     operator.ifloordiv: '//=',
+    1:     operator.truediv: '/',
+    1:     operator.itruediv: '/=',
+    1:     operator.mod: '%',
+    1:     operator.imod: '%=',
+    1:     operator.pow: '**',
+    1:     operator.ipow: '**=',
+    1:     operator.and_: '&',
+    1:     operator.iand: '&=',
+    1:     operator.or_: '|',
+    1:     operator.ior: '|=',
+    1:     operator.xor: '^',
+    1:     operator.ixor: '^=',
+    1:     operator.lshift: '<<',
+    1:     operator.ilshift: '<<=',
+    1:     operator.rshift: '>>',
+    1:     operator.irshift: '>>=',
+    1:     operator.eq: '==',
+    1:     operator.ne: '!=',
+    1:     operator.lt: '<',
+    1:     operator.le: '<=',
+    1:     operator.gt: '>',
+    1:     operator.ge: '>=',
+    1:     operator.is_: 'is',
+    1:     operator.is_not: 'is not',
+           # This one has its args reversed!
+    1:     operator.contains: 'in',
+           # Unary
+    1:     operator.pos: '+',
+    1:     operator.neg: '-',
+    1:     operator.invert: '~',
+    1:     operator.not_: 'not',
+    1:     operator.truth: 'is_true',
+       }
+       
+       
+    1: _shutting_down = False
+       
+       
+    1: def _at_shutdown():
+           global _shutting_down
+           _shutting_down = True
+       
+       
+    1: def shutting_down(globals=globals):
+           """
+           Whether the interpreter is currently shutting down.
+           For use in finalizers, __del__ methods, and similar; it is advised
+           to early bind this function rather than look it up when calling it,
+           since at shutdown module globals may be cleared.
+           """
+           # At shutdown, the attribute may have been cleared or set to None.
+           v = globals().get('_shutting_down')
+           return v is True or v is None
+       
+       
+       # weakref.finalize registers an exit function that runs all finalizers for
+       # which atexit is True. Some of these finalizers may call shutting_down() to
+       # check whether the interpreter is shutting down. For this to behave correctly,
+       # we need to make sure that _at_shutdown is called before the finalizer exit
+       # function. Since atexit operates as a LIFO stack, we first construct a dummy
+       # finalizer then register atexit to ensure this ordering.
+    2: weakref.finalize(lambda: None, lambda: None)
+    1: atexit.register(_at_shutdown)
+       
+       
+    1: _old_style_deprecation_msg = (
+    1:     "Code using Numba extension API maybe depending on 'old_style' "
+           "error-capturing, which is deprecated and will be replaced by 'new_style' "
+           "in a future release. See details at "
+           "https://numba.readthedocs.io/en/latest/reference/deprecation.html#deprecation-of-old-style-numba-captured-errors" # noqa: E501
+       )
+       
+       
+    1: def _warn_old_style():
+           from numba.core import errors  # to prevent circular import
+       
+           exccls, _, tb = sys.exc_info()
+           # Warn only if the active exception is not a NumbaError
+           # and not a NumbaWarning which is raised if -Werror is set.
+           numba_errs = (errors.NumbaError, errors.NumbaWarning)
+           if exccls is not None and not issubclass(exccls, numba_errs):
+               tb_last = traceback.format_tb(tb)[-1]
+               msg = f"{_old_style_deprecation_msg}\nException origin:\n{tb_last}"
+               warnings.warn(msg,
+                             errors.NumbaPendingDeprecationWarning)
+       
+       
+    1: def use_new_style_errors():
+           """Returns True if new style errors are to be used, false otherwise"""
+           # This uses `config` so as to make sure it gets the current value from the
+           # module as e.g. some tests mutate the config with `override_config`.
+           res = config.CAPTURED_ERRORS == 'new_style'
+           if not res:
+               _warn_old_style()
+           return res
+       
+       
+    1: def use_old_style_errors():
+           """Returns True if old style errors are to be used, false otherwise"""
+           # This uses `config` so as to make sure it gets the current value from the
+           # module as e.g. some tests mutate the config with `override_config`.
+           res = config.CAPTURED_ERRORS == 'old_style'
+           if res:
+               _warn_old_style()
+           return res
+       
+       
+    2: class ThreadLocalStack:
+    1:     """A TLS stack container.
+       
+           Uses the BORG pattern and stores states in threadlocal storage.
+           """
+    1:     _tls = threading.local()
+    1:     stack_name: str
+    1:     _registered = {}
+       
+    1:     def __init_subclass__(cls, *, stack_name, **kwargs):
+    2:         super().__init_subclass__(**kwargs)
+               # Register stack_name mapping to the new subclass
+    2:         assert stack_name not in cls._registered, \
+                   f"stack_name: '{stack_name}' already in use"
+    2:         cls.stack_name = stack_name
+    2:         cls._registered[stack_name] = cls
+       
+    1:     def __init__(self):
+               # This class must not be used directly.
+ 1361:         assert type(self) is not ThreadLocalStack
+ 1361:         tls = self._tls
+ 1361:         attr = f"stack_{self.stack_name}"
+ 1361:         try:
+ 1361:             tls_stack = getattr(tls, attr)
+    2:         except AttributeError:
+    2:             tls_stack = list()
+    2:             setattr(tls, attr, tls_stack)
+       
+ 1361:         self._stack = tls_stack
+       
+    1:     def push(self, state):
+               """Push to the stack
+               """
+   24:         self._stack.append(state)
+       
+    1:     def pop(self):
+               """Pop from the stack
+               """
+   24:         return self._stack.pop()
+       
+    1:     def top(self):
+               """Get the top item on the stack.
+       
+               Raises IndexError if the stack is empty. Users should check the size
+               of the stack beforehand.
+               """
+ 1150:         return self._stack[-1]
+       
+    1:     def __len__(self):
+ 1333:         return len(self._stack)
+       
+    2:     @contextlib.contextmanager
+    2:     def enter(self, state):
+               """A contextmanager that pushes ``state`` for the duration of the
+               context.
+               """
+   24:         self.push(state)
+   24:         try:
+   24:             yield
+               finally:
+   24:             self.pop()
+       
+       
+    2: class ConfigOptions(object):
+    1:     OPTIONS = {}
+       
+    1:     def __init__(self):
+               self._values = self.OPTIONS.copy()
+       
+    1:     def set(self, name, value=True):
+               if name not in self.OPTIONS:
+                   raise NameError("Invalid flag: %s" % name)
+               self._values[name] = value
+       
+    1:     def unset(self, name):
+               self.set(name, False)
+       
+    1:     def _check_attr(self, name):
+               if name not in self.OPTIONS:
+                   raise AttributeError("Invalid flag: %s" % name)
+       
+    1:     def __getattr__(self, name):
+               self._check_attr(name)
+               return self._values[name]
+       
+    1:     def __setattr__(self, name, value):
+               if name.startswith('_'):
+                   super(ConfigOptions, self).__setattr__(name, value)
+               else:
+                   self._check_attr(name)
+                   self._values[name] = value
+       
+    1:     def __repr__(self):
+               return "Flags(%s)" % ', '.join('%s=%s' % (k, v)
+                                              for k, v in self._values.items()
+                                              if v is not False)
+       
+    1:     def copy(self):
+               copy = type(self)()
+               copy._values = self._values.copy()
+               return copy
+       
+    1:     def __eq__(self, other):
+               return (isinstance(other, ConfigOptions) and
+                       other._values == self._values)
+       
+    1:     def __ne__(self, other):
+               return not self == other
+       
+    1:     def __hash__(self):
+               return hash(tuple(sorted(self._values.items())))
+       
+       
+    1: def order_by_target_specificity(target, templates, fnkey=''):
+           """This orders the given templates from most to least specific against the
+           current "target". "fnkey" is an indicative typing key for use in the
+           exception message in the case that there's no usable templates for the
+           current "target".
+           """
+           # No templates... return early!
+ 1484:     if templates == []:
+  953:         return []
+       
+  531:     from numba.core.target_extension import target_registry
+       
+           # fish out templates that are specific to the target if a target is
+           # specified
+  531:     DEFAULT_TARGET = 'generic'
+  531:     usable = []
+ 4612:     for ix, temp_cls in enumerate(templates):
+               # ? Need to do something about this next line
+ 4081:         md = getattr(temp_cls, "metadata", {})
+ 4081:         hw = md.get('target', DEFAULT_TARGET)
+ 4081:         if hw is not None:
+ 4081:             hw_clazz = target_registry[hw]
+ 4081:             if target.inherits_from(hw_clazz):
+ 4081:                 usable.append((temp_cls, hw_clazz, ix))
+       
+           # sort templates based on target specificity
+  531:     def key(x):
+ 4081:         return target.__mro__.index(x[1])
+ 5143:     order = [x[0] for x in sorted(usable, key=key)]
+       
+  531:     if not order:
+               msg = (f"Function resolution cannot find any matches for function "
+                      f"'{fnkey}' for the current target: '{target}'.")
+               from numba.core.errors import UnsupportedError
+               raise UnsupportedError(msg)
+       
+  531:     return order
+       
+       
+    1: T = _tp.TypeVar('T')
+       
+       
+    2: class MutableSortedSet(MutableSet[T], _tp.Generic[T]):
+    1:     """Mutable Sorted Set
+           """
+       
+    1:     def __init__(self, values: _tp.Iterable[T] = ()):
+               self._values = set(values)
+       
+    1:     def __len__(self):
+               return len(self._values)
+       
+    1:     def __iter__(self):
+               return iter(k for k in sorted(self._values))
+       
+    1:     def __contains__(self, x: T) -> bool:
+               return self._values.__contains__(x)
+       
+    1:     def add(self, x: T):
+               return self._values.add(x)
+       
+    1:     def discard(self, value: T):
+               self._values.discard(value)
+       
+    1:     def update(self, values):
+               self._values.update(values)
+       
+       
+    1: Tk = _tp.TypeVar('Tk')
+    1: Tv = _tp.TypeVar('Tv')
+       
+       
+    2: class SortedMap(Mapping[Tk, Tv], _tp.Generic[Tk, Tv]):
+    1:     """Immutable
+           """
+       
+    1:     def __init__(self, seq):
+   24:         self._values = []
+   24:         self._index = {}
+  119:         for i, (k, v) in enumerate(sorted(seq)):
+   95:             self._index[k] = i
+   95:             self._values.append((k, v))
+       
+    1:     def __getitem__(self, k):
+  572:         i = self._index[k]
+  572:         return self._values[i][1]
+       
+    1:     def __len__(self):
+   24:         return len(self._values)
+       
+    1:     def __iter__(self):
+  429:         return iter(k for k, v in self._values)
+       
+       
+    2: class MutableSortedMap(MutableMapping[Tk, Tv], _tp.Generic[Tk, Tv]):
+    1:     def __init__(self, dct=None):
+               if dct is None:
+                   dct = {}
+               self._dct: dict[Tk, Tv] = dct
+       
+    1:     def __getitem__(self, k: Tk) -> Tv:
+               return self._dct[k]
+       
+    1:     def __setitem__(self, k: Tk, v: Tv):
+               self._dct[k] = v
+       
+    1:     def __delitem__(self, k: Tk):
+               del self._dct[k]
+       
+    1:     def __len__(self) -> int:
+               return len(self._dct)
+       
+    1:     def __iter__(self) -> int:
+               return iter(k for k in sorted(self._dct))
+       
+       
+    2: class UniqueDict(dict):
+    1:     def __setitem__(self, key, value):
+ 2634:         if key in self:
+                   raise AssertionError("key already in dictionary: %r" % (key,))
+ 2634:         super(UniqueDict, self).__setitem__(key, value)
+       
+       
+    1: def runonce(fn):
+    4:     @functools.wraps(fn)
+    4:     def inner():
+    2:         if not inner._ran:
+    2:             res = fn()
+    2:             inner._result = res
+    2:             inner._ran = True
+    2:         return inner._result
+       
+    2:     inner._ran = False
+    2:     return inner
+       
+       
+    1: def bit_length(intval):
+           """
+           Return the number of bits necessary to represent integer `intval`.
+           """
+  109:     assert isinstance(intval, int)
+  109:     if intval >= 0:
+  103:         return len(bin(intval)) - 2
+           else:
+    6:         return len(bin(-intval - 1)) - 2
+       
+       
+    1: def stream_list(lst):
+           """
+           Given a list, return an infinite iterator of iterators.
+           Each iterator iterates over the list from the last seen point up to
+           the current end-of-list.
+       
+           In effect, each iterator will give the newly appended elements from the
+           previous iterator instantiation time.
+           """
+   67:     def sublist_iterator(start, stop):
+24500:         return iter(lst[start:stop])
+       
+   67:     start = 0
+24500:     while True:
+24500:         stop = len(lst)
+24500:         yield sublist_iterator(start, stop)
+24433:         start = stop
+       
+       
+    2: class BenchmarkResult(object):
+    1:     def __init__(self, func, records, loop):
+               self.func = func
+               self.loop = loop
+               self.records = np.array(records) / loop
+               self.best = np.min(self.records)
+       
+    1:     def __repr__(self):
+               name = getattr(self.func, "__name__", self.func)
+               args = (name, self.loop, self.records.size, format_time(self.best))
+               return "%20s: %10d loops, best of %d: %s per loop" % args
+       
+       
+    1: def format_time(tm):
+           units = "s ms us ns ps".split()
+           base = 1
+           for unit in units[:-1]:
+               if tm >= base:
+                   break
+               base /= 1000
+           else:
+               unit = units[-1]
+           return "%.1f%s" % (tm / base, unit)
+       
+       
+    1: def benchmark(func, maxsec=1):
+           timer = timeit.Timer(func)
+           number = 1
+           result = timer.repeat(1, number)
+           # Too fast to be measured
+           while min(result) / number == 0:
+               number *= 10
+               result = timer.repeat(3, number)
+           best = min(result) / number
+           if best >= maxsec:
+               return BenchmarkResult(func, result, number)
+               # Scale it up to make it close the maximum time
+           max_per_run_time = maxsec / 3 / number
+           number = max(max_per_run_time / best / 3, 1)
+           # Round to the next power of 10
+           number = int(10 ** math.ceil(math.log10(number)))
+           records = timer.repeat(3, number)
+           return BenchmarkResult(func, records, number)
+       
+       
+       # A dummy module for dynamically-generated functions
+    1: _dynamic_modname = '<dynamic>'
+    1: _dynamic_module = ModuleType(_dynamic_modname)
+    1: _dynamic_module.__builtins__ = builtins
+       
+       
+    1: def chain_exception(new_exc, old_exc):
+           """Set the __cause__ attribute on *new_exc* for explicit exception
+           chaining.  Returns the inplace modified *new_exc*.
+           """
+           if DEVELOPER_MODE:
+               new_exc.__cause__ = old_exc
+           return new_exc
+       
+       
+    1: def get_nargs_range(pyfunc):
+           """Return the minimal and maximal number of Python function
+           positional arguments.
+           """
+           sig = pysignature(pyfunc)
+           min_nargs = 0
+           max_nargs = 0
+           for p in sig.parameters.values():
+               max_nargs += 1
+               if p.default == inspect._empty:
+                   min_nargs += 1
+           return min_nargs, max_nargs
+       
+       
+    1: def unify_function_types(numba_types):
+           """Return a normalized tuple of Numba function types so that
+       
+               Tuple(numba_types)
+       
+           becomes
+       
+               UniTuple(dtype=<unified function type>, count=len(numba_types))
+       
+           If the above transformation would be incorrect, return the
+           original input as given. For instance, if the input tuple contains
+           types that are not function or dispatcher type, the transformation
+           is considered incorrect.
+           """
+           dtype = unified_function_type(numba_types)
+           if dtype is None:
+               return numba_types
+           return (dtype,) * len(numba_types)
+       
+       
+    1: def unified_function_type(numba_types, require_precise=True):
+           """Returns a unified Numba function type if possible.
+       
+           Parameters
+           ----------
+           numba_types : Sequence of numba Type instances.
+           require_precise : bool
+             If True, the returned Numba function type must be precise.
+       
+           Returns
+           -------
+           typ : {numba.core.types.Type, None}
+             A unified Numba function type. Or ``None`` when the Numba types
+             cannot be unified, e.g. when the ``numba_types`` contains at
+             least two different Numba function type instances.
+       
+           If ``numba_types`` contains a Numba dispatcher type, the unified
+           Numba function type will be an imprecise ``UndefinedFunctionType``
+           instance, or None when ``require_precise=True`` is specified.
+       
+           Specifying ``require_precise=False`` enables unifying imprecise
+           Numba dispatcher instances when used in tuples or if-then branches
+           when the precise Numba function cannot be determined on the first
+           occurrence that is not a call expression.
+           """
+  366:     from numba.core.errors import NumbaExperimentalFeatureWarning
+       
+  366:     if not (isinstance(numba_types, Sequence) and
+  732:             len(numba_types) > 0 and
+  732:             isinstance(numba_types[0],
+  366:                        (types.Dispatcher, types.FunctionType))):
+  366:         return
+       
+           warnings.warn("First-class function type feature is experimental",
+                         category=NumbaExperimentalFeatureWarning)
+       
+           mnargs, mxargs = None, None
+           dispatchers = set()
+           function = None
+           undefined_function = None
+       
+           for t in numba_types:
+               if isinstance(t, types.Dispatcher):
+                   mnargs1, mxargs1 = get_nargs_range(t.dispatcher.py_func)
+                   if mnargs is None:
+                       mnargs, mxargs = mnargs1, mxargs1
+                   elif not (mnargs, mxargs) == (mnargs1, mxargs1):
+                       return
+                   dispatchers.add(t.dispatcher)
+                   t = t.dispatcher.get_function_type()
+                   if t is None:
+                       continue
+               if isinstance(t, types.FunctionType):
+                   if mnargs is None:
+                       mnargs = mxargs = t.nargs
+                   elif not (mnargs == mxargs == t.nargs):
+                       return
+                   if isinstance(t, types.UndefinedFunctionType):
+                       if undefined_function is None:
+                           undefined_function = t
+                       else:
+                           # Refuse to unify using function type
+                           return
+                       dispatchers.update(t.dispatchers)
+                   else:
+                       if function is None:
+                           function = t
+                       else:
+                           assert function == t
+               else:
+                   return
+           if require_precise and (function is None or undefined_function is not None):
+               return
+           if function is not None:
+               if undefined_function is not None:
+                   assert function.nargs == undefined_function.nargs
+                   function = undefined_function
+           elif undefined_function is not None:
+               undefined_function.dispatchers.update(dispatchers)
+               function = undefined_function
+           else:
+               function = types.UndefinedFunctionType(mnargs, dispatchers)
+       
+           return function
+       
+       
+    2: class _RedirectSubpackage(ModuleType):
+    1:     """Redirect a subpackage to a subpackage.
+       
+           This allows all references like:
+       
+           >>> from numba.old_subpackage import module
+           >>> module.item
+       
+           >>> import numba.old_subpackage.module
+           >>> numba.old_subpackage.module.item
+       
+           >>> from numba.old_subpackage.module import item
+           """
+    1:     def __init__(self, old_module_locals, new_module):
+               old_module = old_module_locals['__name__']
+               super().__init__(old_module)
+       
+               self.__old_module_states = {}
+               self.__new_module = new_module
+       
+               new_mod_obj = import_module(new_module)
+       
+               # Map all sub-modules over
+               for k, v in new_mod_obj.__dict__.items():
+                   # Get attributes so that `subpackage.xyz` and
+                   # `from subpackage import xyz` work
+                   setattr(self, k, v)
+                   if isinstance(v, ModuleType):
+                       # Map modules into the interpreter so that
+                       # `import subpackage.xyz` works
+                       sys.modules[f"{old_module}.{k}"] = sys.modules[v.__name__]
+       
+               # copy across dunders so that package imports work too
+               for attr, value in old_module_locals.items():
+                   if attr.startswith('__') and attr.endswith('__'):
+                       if attr != "__builtins__":
+                           setattr(self, attr, value)
+                           self.__old_module_states[attr] = value
+       
+    1:     def __reduce__(self):
+               args = (self.__old_module_states, self.__new_module)
+               return _RedirectSubpackage, args
+       
+       
+    1: def get_hashable_key(value):
+           """
+               Given a value, returns a key that can be used
+               as a hash. If the value is hashable, we return
+               the value, otherwise we return id(value).
+       
+               See discussion in gh #6957
+           """
+  309:     try:
+  309:         hash(value)
+           except TypeError:
+               return id(value)
+           else:
+  309:         return value
+       
+       
+    2: class threadsafe_cached_property(functools.cached_property):
+    1:     def __init__(self, *args, **kwargs):
+    2:         super().__init__(*args, **kwargs)
+    2:         self._lock = threading.RLock()
+       
+    1:     def __get__(self, *args, **kwargs):
+    4:         with self._lock:
+    2:             return super().__get__(*args, **kwargs)
+       
+       
+    1: def dump_llvm(fndesc, module):
+           print(("LLVM DUMP %s" % fndesc).center(80, '-'))
+           if config.HIGHLIGHT_DUMPS:
+               try:
+                   from pygments import highlight
+                   from pygments.lexers import LlvmLexer as lexer
+                   from pygments.formatters import Terminal256Formatter
+                   from numba.misc.dump_style import by_colorscheme
+                   print(highlight(module.__repr__(), lexer(),
+                                   Terminal256Formatter( style=by_colorscheme())))
+               except ImportError:
+                   msg = "Please install pygments to see highlighted dumps"
+                   raise ValueError(msg)
+           else:
+               print(module)
+           print('=' * 80)

@@ -1,0 +1,29 @@
+    1: import numpy as np
+       
+    1: from pymgipsim.InputGeneration.signal import Signal, Events
+    1: from pymgipsim.Utilities.Scenario import scenario
+    1: from pymgipsim.Controllers import OpenLoop
+       
+    1: def generate_basal_insulin(scenario_instance: scenario, args):
+    1:     basal = np.expand_dims(np.asarray(scenario_instance.patient.demographic_info.basal),1)
+    1:     start_time = np.ones_like(basal)*scenario_instance.settings.start_time
+    1:     if scenario_instance.controller.name == OpenLoop.controller.Controller.name:
+    1:         basal = args.basal_multiplier * basal
+    1:         return Events(start_time=start_time, magnitude=basal).as_dict()
+           else:
+               return Events(start_time=np.zeros_like(start_time), magnitude=np.zeros_like(basal)).as_dict()
+       
+    1: def generate_bolus_insulin(scenario_instance: scenario, args):
+    1:     meal_times = np.asarray(scenario_instance.inputs.meal_carb.start_time)
+    1:     meal_durations = np.asarray(scenario_instance.inputs.meal_carb.duration)
+    1:     meal_magnitudes = np.asarray(scenario_instance.inputs.meal_carb.magnitude)
+       
+    1:     if scenario_instance.controller.name == OpenLoop.controller.Controller.name:
+    1:         carb_insulin_ratio = np.expand_dims(np.asarray(scenario_instance.patient.demographic_info.carb_insulin_ratio),1)
+    1:         bolus_magnitudes = args.bolus_multiplier * np.divide(meal_magnitudes, carb_insulin_ratio)
+    3:         return Events(start_time= meal_times, duration=np.ones_like(meal_durations),
+    2:                            magnitude=bolus_magnitudes).as_dict()
+           else:
+               return Events(start_time= meal_times,
+                           duration=np.ones_like(meal_durations),
+                           magnitude=np.zeros_like(meal_magnitudes)).as_dict()

@@ -1,0 +1,213 @@
+    1: from collections import deque
+       
+    1: from numba.core import types, cgutils
+       
+       
+       
+    2: class DataPacker(object):
+    1:     """
+           A helper to pack a number of typed arguments into a data structure.
+           Omitted arguments (i.e. values with the type `Omitted`) are automatically
+           skipped.
+           """
+           # XXX should DataPacker be a model for a dedicated type?
+       
+    1:     def __init__(self, dmm, fe_types):
+               self._dmm = dmm
+               self._fe_types = fe_types
+               self._models = [dmm.lookup(ty) for ty in fe_types]
+       
+               self._pack_map = []
+               self._be_types = []
+               for i, ty in enumerate(fe_types):
+                   if not isinstance(ty, types.Omitted):
+                       self._pack_map.append(i)
+                       self._be_types.append(self._models[i].get_data_type())
+       
+    1:     def as_data(self, builder, values):
+               """
+               Return the given values packed as a data structure.
+               """
+               elems = [self._models[i].as_data(builder, values[i])
+                        for i in self._pack_map]
+               return cgutils.make_anonymous_struct(builder, elems)
+       
+    1:     def _do_load(self, builder, ptr, formal_list=None):
+               res = []
+               for i, i_formal in enumerate(self._pack_map):
+                   elem_ptr = cgutils.gep_inbounds(builder, ptr, 0, i)
+                   val = self._models[i_formal].load_from_data_pointer(builder, elem_ptr)
+                   if formal_list is None:
+                       res.append((self._fe_types[i_formal], val))
+                   else:
+                       formal_list[i_formal] = val
+               return res
+       
+    1:     def load(self, builder, ptr):
+               """
+               Load the packed values and return a (type, value) tuples.
+               """
+               return self._do_load(builder, ptr)
+       
+    1:     def load_into(self, builder, ptr, formal_list):
+               """
+               Load the packed values into a sequence indexed by formal
+               argument number (skipping any Omitted position).
+               """
+               self._do_load(builder, ptr, formal_list)
+       
+       
+    2: class ArgPacker(object):
+    1:     """
+           Compute the position for each high-level typed argument.
+           It flattens every composite argument into primitive types.
+           It maintains a position map for unflattening the arguments.
+       
+           Since struct (esp. nested struct) have specific ABI requirements (e.g.
+           alignment, pointer address-space, ...) in different architecture (e.g.
+           OpenCL, CUDA), flattening composite argument types simplifes the call
+           setup from the Python side.  Functions are receiving simple primitive
+           types and there are only a handful of these.
+           """
+       
+    1:     def __init__(self, dmm, fe_args):
+  216:         self._dmm = dmm
+  216:         self._fe_args = fe_args
+  216:         self._nargs = len(fe_args)
+       
+  216:         self._dm_args = []
+  216:         argtys = []
+  728:         for ty in fe_args:
+  512:             dm = self._dmm.lookup(ty)
+  512:             self._dm_args.append(dm)
+  512:             argtys.append(dm.get_argument_type())
+  216:         self._unflattener = _Unflattener(argtys)
+  216:         self._be_args = list(_flatten(argtys))
+       
+    1:     def as_arguments(self, builder, values):
+               """Flatten all argument values
+               """
+   52:         if len(values) != self._nargs:
+                   raise TypeError("invalid number of args: expected %d, got %d"
+                                   % (self._nargs, len(values)))
+       
+   52:         if not values:
+                   return ()
+       
+  410:         args = [dm.as_argument(builder, val)
+  179:                 for dm, val in zip(self._dm_args, values)
+                       ]
+       
+   52:         args = tuple(_flatten(args))
+   52:         return args
+       
+    1:     def from_arguments(self, builder, args):
+               """Unflatten all argument values
+               """
+       
+   24:         valtree = self._unflattener.unflatten(args)
+  182:         values = [dm.from_argument(builder, val)
+   79:                   for dm, val in zip(self._dm_args, valtree)
+                         ]
+       
+   24:         return values
+       
+    1:     def assign_names(self, args, names):
+               """Assign names for each flattened argument values.
+               """
+       
+   63:         valtree = self._unflattener.unflatten(args)
+  211:         for aval, aname in zip(valtree, names):
+  148:             self._assign_names(aval, aname)
+       
+    1:     def _assign_names(self, val_or_nested, name, depth=()):
+  319:         if isinstance(val_or_nested, (tuple, list)):
+  242:             for pos, aval in enumerate(val_or_nested):
+  171:                 self._assign_names(aval, name, depth=depth + (pos,))
+               else:
+  248:             postfix = '.'.join(map(str, depth))
+  248:             parts = [name, postfix]
+  248:             val_or_nested.name = '.'.join(filter(bool, parts))
+       
+    2:     @property
+    2:     def argument_types(self):
+               """Return a list of LLVM types that are results of flattening
+               composite types.
+               """
+  573:         return tuple(ty for ty in self._be_args if ty != ())
+       
+       
+    1: def _flatten(iterable):
+           """
+           Flatten nested iterable of (tuple, list).
+           """
+  268:     def rec(iterable):
+ 2453:         for i in iterable:
+ 1778:             if isinstance(i, (tuple, list)):
+ 1716:                 for j in rec(i):
+ 1309:                     yield j
+                   else:
+ 1371:                 yield i
+  268:     return rec(iterable)
+       
+       
+    1: _PUSH_LIST = 1
+    1: _APPEND_NEXT_VALUE = 2
+    1: _APPEND_EMPTY_TUPLE = 3
+    1: _POP = 4
+       
+    2: class _Unflattener(object):
+    1:     """
+           An object used to unflatten nested sequences after a given pattern
+           (an arbitrarily nested sequence).
+           The pattern shows the nested sequence shape desired when unflattening;
+           the values it contains are irrelevant.
+           """
+       
+    1:     def __init__(self, pattern):
+  216:         self._code = self._build_unflatten_code(pattern)
+       
+    1:     def _build_unflatten_code(self, iterable):
+               """Build the unflatten opcode sequence for the given *iterable* structure
+               (an iterable of nested sequences).
+               """
+  216:         code = []
+  216:         def rec(iterable):
+ 1885:             for i in iterable:
+ 1409:                 if isinstance(i, (tuple, list)):
+  323:                     if len(i) > 0:
+  260:                         code.append(_PUSH_LIST)
+  260:                         rec(i)
+  260:                         code.append(_POP)
+                           else:
+   63:                         code.append(_APPEND_EMPTY_TUPLE)
+                       else:
+ 1086:                     code.append(_APPEND_NEXT_VALUE)
+       
+  216:         rec(iterable)
+  216:         return code
+       
+    1:     def unflatten(self, flatiter):
+               """Rebuild a nested tuple structure.
+               """
+   87:         vals = deque(flatiter)
+       
+   87:         res = []
+   87:         cur = res
+   87:         stack = []
+  667:         for op in self._code:
+  580:             if op is _PUSH_LIST:
+   85:                 stack.append(cur)
+   85:                 cur.append([])
+   85:                 cur = cur[-1]
+  495:             elif op is _APPEND_NEXT_VALUE:
+  382:                 cur.append(vals.popleft())
+  113:             elif op is _APPEND_EMPTY_TUPLE:
+   28:                 cur.append(())
+   85:             elif op is _POP:
+   85:                 cur = stack.pop()
+       
+   87:         assert not stack, stack
+   87:         assert not vals, vals
+       
+   87:         return res

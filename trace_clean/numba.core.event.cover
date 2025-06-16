@@ -1,0 +1,485 @@
+    1: """
+       The ``numba.core.event`` module provides a simple event system for applications
+       to register callbacks to listen to specific compiler events.
+       
+       The following events are built in:
+       
+       - ``"numba:compile"`` is broadcast when a dispatcher is compiling. Events of
+         this kind have ``data`` defined to be a ``dict`` with the following
+         key-values:
+       
+         - ``"dispatcher"``: the dispatcher object that is compiling.
+         - ``"args"``: the argument types.
+         - ``"return_type"``: the return type.
+       
+       - ``"numba:compiler_lock"`` is broadcast when the internal compiler-lock is
+         acquired. This is mostly used internally to measure time spent with the lock
+         acquired.
+       
+       - ``"numba:llvm_lock"`` is broadcast when the internal LLVM-lock is acquired.
+         This is used internally to measure time spent with the lock acquired.
+       
+       - ``"numba:run_pass"`` is broadcast when a compiler pass is running.
+       
+           - ``"name"``: pass name.
+           - ``"qualname"``: qualified name of the function being compiled.
+           - ``"module"``: module name of the function being compiled.
+           - ``"flags"``: compilation flags.
+           - ``"args"``: argument types.
+           - ``"return_type"`` return type.
+       
+       Applications can register callbacks that are listening for specific events using
+       ``register(kind: str, listener: Listener)``, where ``listener`` is an instance
+       of ``Listener`` that defines custom actions on occurrence of the specific event.
+       """
+       
+    1: import os
+    1: import json
+    1: import atexit
+    1: import abc
+    1: import enum
+    1: import time
+    1: import threading
+    1: from timeit import default_timer as timer
+    1: from contextlib import contextmanager, ExitStack
+    1: from collections import defaultdict
+       
+    1: from numba.core import config
+       
+       
+    2: class EventStatus(enum.Enum):
+    1:     """Status of an event.
+           """
+    1:     START = enum.auto()
+    1:     END = enum.auto()
+       
+       
+       # Builtin event kinds.
+    1: _builtin_kinds = frozenset([
+           "numba:compiler_lock",
+           "numba:compile",
+           "numba:llvm_lock",
+           "numba:run_pass",
+       ])
+       
+       
+    1: def _guard_kind(kind):
+           """Guard to ensure that an event kind is valid.
+       
+           All event kinds with a "numba:" prefix must be defined in the pre-defined
+           ``numba.core.event._builtin_kinds``.
+           Custom event kinds are allowed by not using the above prefix.
+       
+           Parameters
+           ----------
+           kind : str
+       
+           Return
+           ------
+           res : str
+           """
+21980:     if kind.startswith("numba:") and kind not in _builtin_kinds:
+               msg = (f"{kind} is not a valid event kind, "
+                      "it starts with the reserved prefix 'numba:'")
+               raise ValueError(msg)
+21980:     return kind
+       
+       
+    2: class Event:
+    1:     """An event.
+       
+           Parameters
+           ----------
+           kind : str
+           status : EventStatus
+           data : any; optional
+               Additional data for the event.
+           exc_details : 3-tuple; optional
+               Same 3-tuple for ``__exit__``.
+           """
+    1:     def __init__(self, kind, status, data=None, exc_details=None):
+21716:         self._kind = _guard_kind(kind)
+21716:         self._status = status
+21716:         self._data = data
+21716:         self._exc_details = (None
+21716:                              if exc_details is None or exc_details[0] is None
+                                    else exc_details)
+       
+    2:     @property
+    2:     def kind(self):
+               """Event kind
+       
+               Returns
+               -------
+               res : str
+               """
+21716:         return self._kind
+       
+    2:     @property
+    2:     def status(self):
+               """Event status
+       
+               Returns
+               -------
+               res : EventStatus
+               """
+               return self._status
+       
+    2:     @property
+    2:     def data(self):
+               """Event data
+       
+               Returns
+               -------
+               res : object
+               """
+               return self._data
+       
+    2:     @property
+    2:     def is_start(self):
+               """Is it a *START* event?
+       
+               Returns
+               -------
+               res : bool
+               """
+39854:         return self._status == EventStatus.START
+       
+    2:     @property
+    2:     def is_end(self):
+               """Is it an *END* event?
+       
+               Returns
+               -------
+               res : bool
+               """
+19927:         return self._status == EventStatus.END
+       
+    2:     @property
+    2:     def is_failed(self):
+               """Is the event carrying an exception?
+       
+               This is used for *END* event. This method will never return ``True``
+               in a *START* event.
+       
+               Returns
+               -------
+               res : bool
+               """
+               return self._exc_details is None
+       
+    1:     def __str__(self):
+               data = (f"{type(self.data).__qualname__}"
+                       if self.data is not None else "None")
+               return f"Event({self._kind}, {self._status}, data: {data})"
+       
+    1:     __repr__ = __str__
+       
+       
+    1: _registered = defaultdict(list)
+       
+       
+    1: def register(kind, listener):
+           """Register a listener for a given event kind.
+       
+           Parameters
+           ----------
+           kind : str
+           listener : Listener
+           """
+  132:     assert isinstance(listener, Listener)
+  132:     kind = _guard_kind(kind)
+  132:     _registered[kind].append(listener)
+       
+       
+    1: def unregister(kind, listener):
+           """Unregister a listener for a given event kind.
+       
+           Parameters
+           ----------
+           kind : str
+           listener : Listener
+           """
+  132:     assert isinstance(listener, Listener)
+  132:     kind = _guard_kind(kind)
+  132:     lst = _registered[kind]
+  132:     lst.remove(listener)
+       
+       
+    1: def broadcast(event):
+           """Broadcast an event to all registered listeners.
+       
+           Parameters
+           ----------
+           event : Event
+           """
+61570:     for listener in _registered[event.kind]:
+39854:         listener.notify(event)
+       
+       
+    2: class Listener(abc.ABC):
+    1:     """Base class for all event listeners.
+           """
+    2:     @abc.abstractmethod
+    2:     def on_start(self, event):
+               """Called when there is a *START* event.
+       
+               Parameters
+               ----------
+               event : Event
+               """
+               pass
+       
+    2:     @abc.abstractmethod
+    2:     def on_end(self, event):
+               """Called when there is a *END* event.
+       
+               Parameters
+               ----------
+               event : Event
+               """
+               pass
+       
+    1:     def notify(self, event):
+               """Notify this Listener with the given Event.
+       
+               Parameters
+               ----------
+               event : Event
+               """
+39854:         if event.is_start:
+19927:             self.on_start(event)
+19927:         elif event.is_end:
+19927:             self.on_end(event)
+               else:
+                   raise AssertionError("unreachable")
+       
+       
+    2: class TimingListener(Listener):
+    1:     """A listener that measures the total time spent between *START* and
+           *END* events during the time this listener is active.
+           """
+    1:     def __init__(self):
+  132:         self._depth = 0
+       
+    1:     def on_start(self, event):
+19927:         if self._depth == 0:
+17865:             self._ts = timer()
+19927:         self._depth += 1
+       
+    1:     def on_end(self, event):
+19927:         self._depth -= 1
+19927:         if self._depth == 0:
+17865:             last = getattr(self, "_duration", 0)
+17865:             self._duration = (timer() - self._ts) + last
+       
+    2:     @property
+    2:     def done(self):
+               """Returns a ``bool`` indicating whether a measurement has been made.
+       
+               When this returns ``False``, the matching event has never fired.
+               If and only if this returns ``True``, ``.duration`` can be read without
+               error.
+               """
+  132:         return hasattr(self, "_duration")
+       
+    2:     @property
+    2:     def duration(self):
+               """Returns the measured duration.
+       
+               This may raise ``AttributeError``. Users can use ``.done`` to check
+               that a measurement has been made.
+               """
+   86:         return self._duration
+       
+       
+    2: class RecordingListener(Listener):
+    1:     """A listener that records all events and stores them in the ``.buffer``
+           attribute as a list of 2-tuple ``(float, Event)``, where the first element
+           is the time the event occurred as returned by ``time.time()`` and the second
+           element is the event.
+           """
+    1:     def __init__(self):
+               self.buffer = []
+       
+    1:     def on_start(self, event):
+               self.buffer.append((time.time(), event))
+       
+    1:     def on_end(self, event):
+               self.buffer.append((time.time(), event))
+       
+       
+    2: @contextmanager
+    2: def install_listener(kind, listener):
+           """Install a listener for event "kind" temporarily within the duration of
+           the context.
+       
+           Returns
+           -------
+           res : Listener
+               The *listener* provided.
+       
+           Examples
+           --------
+       
+           >>> with install_listener("numba:compile", listener):
+           >>>     some_code()  # listener will be active here.
+           >>> other_code()     # listener will be unregistered by this point.
+       
+           """
+  132:     register(kind, listener)
+  132:     try:
+  132:         yield listener
+           finally:
+  132:         unregister(kind, listener)
+       
+       
+    2: @contextmanager
+    2: def install_timer(kind, callback):
+           """Install a TimingListener temporarily to measure the duration of
+           an event.
+       
+           If the context completes successfully, the *callback* function is executed.
+           The *callback* function is expected to take a float argument for the
+           duration in seconds.
+       
+           Returns
+           -------
+           res : TimingListener
+       
+           Examples
+           --------
+       
+           This is equivalent to:
+       
+           >>> with install_listener(kind, TimingListener()) as res:
+           >>>    ...
+           """
+  132:     tl = TimingListener()
+  264:     with install_listener(kind, tl):
+  132:         yield tl
+       
+  132:     if tl.done:
+   86:         callback(tl.duration)
+       
+       
+    2: @contextmanager
+    2: def install_recorder(kind):
+           """Install a RecordingListener temporarily to record all events.
+       
+           Once the context is closed, users can use ``RecordingListener.buffer``
+           to access the recorded events.
+       
+           Returns
+           -------
+           res : RecordingListener
+       
+           Examples
+           --------
+       
+           This is equivalent to:
+       
+           >>> with install_listener(kind, RecordingListener()) as res:
+           >>>    ...
+           """
+           rl = RecordingListener()
+           with install_listener(kind, rl):
+               yield rl
+       
+       
+    1: def start_event(kind, data=None):
+           """Trigger the start of an event of *kind* with *data*.
+       
+           Parameters
+           ----------
+           kind : str
+               Event kind.
+           data : any; optional
+               Extra event data.
+           """
+10858:     evt = Event(kind=kind, status=EventStatus.START, data=data)
+10858:     broadcast(evt)
+       
+       
+    1: def end_event(kind, data=None, exc_details=None):
+           """Trigger the end of an event of *kind*, *exc_details*.
+       
+           Parameters
+           ----------
+           kind : str
+               Event kind.
+           data : any; optional
+               Extra event data.
+           exc_details : 3-tuple; optional
+               Same 3-tuple for ``__exit__``. Or, ``None`` if no error.
+           """
+21716:     evt = Event(
+10858:         kind=kind, status=EventStatus.END, data=data, exc_details=exc_details,
+           )
+10858:     broadcast(evt)
+       
+       
+    2: @contextmanager
+    2: def trigger_event(kind, data=None):
+           """A context manager to trigger the start and end events of *kind* with
+           *data*. The start event is triggered when entering the context.
+           The end event is triggered when exiting the context.
+       
+           Parameters
+           ----------
+           kind : str
+               Event kind.
+           data : any; optional
+               Extra event data.
+           """
+ 1282:     with ExitStack() as scope:
+ 1282:         @scope.push
+ 1282:         def on_exit(*exc_details):
+  641:             end_event(kind, data=data, exc_details=exc_details)
+       
+  641:         start_event(kind, data=data)
+  641:         yield
+       
+       
+    1: def _prepare_chrome_trace_data(listener: RecordingListener):
+           """Prepare events in `listener` for serializing as chrome trace data.
+           """
+           # The spec for the trace event format can be found at:
+           # https://docs.google.com/document/d/1CvAClvFfyA5R-PhYUmn5OOQtYMH4h6I0nSsKchNAySU/edit   # noqa
+           # This code only uses the JSON Array Format for simplicity.
+           pid = os.getpid()
+           tid = threading.get_native_id()
+           evs = []
+           for ts, rec in listener.buffer:
+               data = rec.data
+               cat = str(rec.kind)
+               ts_scaled = ts * 1_000_000   # scale to microseconds
+               ph = 'B' if rec.is_start else 'E'
+               name = data['name']
+               args = data
+               ev = dict(
+                   cat=cat, pid=pid, tid=tid, ts=ts_scaled, ph=ph, name=name,
+                   args=args,
+               )
+               evs.append(ev)
+           return evs
+       
+       
+    1: def _setup_chrome_trace_exit_handler():
+           """Setup a RecordingListener and an exit handler to write the captured
+           events to file.
+           """
+           listener = RecordingListener()
+           register("numba:run_pass", listener)
+           filename = config.CHROME_TRACE
+       
+           @atexit.register
+           def _write_chrome_trace():
+               # The following output file is not multi-process safe.
+               evs = _prepare_chrome_trace_data(listener)
+               with open(filename, "w") as out:
+                   json.dump(evs, out)
+       
+       
+    1: if config.CHROME_TRACE:
+           _setup_chrome_trace_exit_handler()

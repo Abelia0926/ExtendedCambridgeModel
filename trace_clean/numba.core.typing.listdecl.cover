@@ -1,0 +1,140 @@
+    1: import operator
+    1: from numba.core import types
+    1: from .templates import (ConcreteTemplate, AbstractTemplate, AttributeTemplate,
+                               CallableTemplate,  Registry, signature, bound_function,
+                               make_callable_template)
+       # Ensure list is typed as a collection as well
+    1: from numba.core.typing import collections
+       
+       
+    1: registry = Registry()
+    1: infer = registry.register
+    1: infer_global = registry.register_global
+    1: infer_getattr = registry.register_attr
+       
+       
+    3: @infer_global(list)
+    2: class ListBuiltin(AbstractTemplate):
+       
+    1:     def generic(self, args, kws):
+               assert not kws
+               if args:
+                   iterable, = args
+                   if isinstance(iterable, types.IterableType):
+                       dtype = iterable.iterator_type.yield_type
+                       return signature(types.List(dtype), iterable)
+               else:
+                   return signature(types.List(types.undefined))
+       
+       
+    3: @infer_getattr
+    2: class ListAttribute(AttributeTemplate):
+    1:     key = types.List
+       
+           # NOTE: some of these should be Sequence / MutableSequence methods
+       
+    2:     @bound_function("list.append")
+    2:     def resolve_append(self, list, args, kws):
+               item, = args
+               assert not kws
+               unified = self.context.unify_pairs(list.dtype, item)
+               if unified is not None:
+                   sig = signature(types.none, unified)
+                   sig = sig.replace(recvr=list.copy(dtype=unified))
+                   return sig
+       
+    2:     @bound_function("list.clear")
+    2:     def resolve_clear(self, list, args, kws):
+               assert not args
+               assert not kws
+               return signature(types.none)
+       
+    2:     @bound_function("list.extend")
+    2:     def resolve_extend(self, list, args, kws):
+               iterable, = args
+               assert not kws
+               if not isinstance(iterable, types.IterableType):
+                   return
+       
+               dtype = iterable.iterator_type.yield_type
+               unified = self.context.unify_pairs(list.dtype, dtype)
+               if unified is not None:
+                   sig = signature(types.none, iterable)
+                   sig = sig.replace(recvr = list.copy(dtype=unified))
+                   return sig
+       
+    2:     @bound_function("list.insert")
+    2:     def resolve_insert(self, list, args, kws):
+               idx, item = args
+               assert not kws
+               if isinstance(idx, types.Integer):
+                   unified = self.context.unify_pairs(list.dtype, item)
+                   if unified is not None:
+                       sig = signature(types.none, types.intp, unified)
+                       sig = sig.replace(recvr = list.copy(dtype=unified))
+                       return sig
+       
+    2:     @bound_function("list.pop")
+    2:     def resolve_pop(self, list, args, kws):
+               assert not kws
+               if not args:
+                   return signature(list.dtype)
+               else:
+                   idx, = args
+                   if isinstance(idx, types.Integer):
+                       return signature(list.dtype, types.intp)
+       
+    3: @infer_global(operator.add)
+    2: class AddList(AbstractTemplate):
+       
+    1:     def generic(self, args, kws):
+   44:         if len(args) == 2:
+   44:             a, b = args
+   44:             if isinstance(a, types.List) and isinstance(b, types.List):
+                       unified = self.context.unify_pairs(a, b)
+                       if unified is not None:
+                           return signature(unified, a, b)
+       
+       
+    3: @infer_global(operator.iadd)
+    2: class InplaceAddList(AbstractTemplate):
+       
+    1:     def generic(self, args, kws):
+   12:         if len(args) == 2:
+   12:             a, b = args
+   12:             if isinstance(a, types.List) and isinstance(b, types.List):
+                       if self.context.can_convert(b.dtype, a.dtype):
+                           return signature(a, a, b)
+       
+       
+    3: @infer_global(operator.mul)
+    2: class MulList(AbstractTemplate):
+           #key = operator.mul
+       
+    1:     def generic(self, args, kws):
+   62:         a, b = args
+   62:         if isinstance(a, types.List) and isinstance(b, types.Integer):
+                   return signature(a, a, types.intp)
+   62:         elif isinstance(a, types.Integer) and isinstance(b, types.List):
+                   return signature(b, types.intp, b)
+       
+       
+    3: @infer_global(operator.imul)
+    3: class InplaceMulList(MulList): pass
+           #key = operator.imul
+       
+       
+    2: class ListCompare(AbstractTemplate):
+       
+    1:     def generic(self, args, kws):
+   18:         [lhs, rhs] = args
+   18:         if isinstance(lhs, types.List) and isinstance(rhs, types.List):
+                   # Check element-wise comparability
+                   res = self.context.resolve_function_type(self.key,
+                                                            (lhs.dtype, rhs.dtype), {})
+                   if res is not None:
+                       return signature(types.boolean, lhs, rhs)
+       
+    3: @infer_global(operator.eq)
+    3: class ListEq(ListCompare): pass
+           #key = operator.eq

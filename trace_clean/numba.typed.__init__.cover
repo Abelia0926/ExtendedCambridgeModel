@@ -1,0 +1,20 @@
+    1: import importlib
+       
+       
+    1: _delayed_symbols = {
+    1:     "Dict": ".typeddict",
+    1:     "List": ".typedlist",
+       }
+       
+       
+    1: def __getattr__(name):
+           # Uses PEP-562 but requires python>3.6
+  253:     if name in _delayed_symbols:
+  248:         modpath = _delayed_symbols[name]
+  248:         mod = importlib.import_module(modpath, __name__)
+  248:         return getattr(mod, name)
+           else:
+    5:         try:
+    5:             return importlib.import_module(f".{name}", __name__)
+               except ModuleNotFoundError:
+                   raise AttributeError

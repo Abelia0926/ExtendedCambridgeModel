@@ -1,0 +1,16 @@
+    1: from statsmodels.compat.pandas import PD_LT_2
+       
+    1: import pandas as pd
+    1: import patsy.util
+       
+       
+    1: def _safe_is_pandas_categorical_dtype(dt):
+           if PD_LT_2:
+               return pd.api.types.is_categorical_dtype(dt)
+           return isinstance(dt, pd.CategoricalDtype)
+       
+       
+    1: def monkey_patch_cat_dtype():
+    1:     patsy.util.safe_is_pandas_categorical_dtype = (
+    1:         _safe_is_pandas_categorical_dtype
+           )

@@ -1,0 +1,749 @@
+    1: import traceback
+    1: from collections import namedtuple, defaultdict
+    1: import itertools
+    1: import logging
+    1: import textwrap
+    1: from shutil import get_terminal_size
+       
+    1: from .abstract import Callable, DTypeSpec, Dummy, Literal, Type, weakref
+    1: from .common import Opaque
+    1: from .misc import unliteral
+    1: from numba.core import errors, utils, types, config
+    1: from numba.core.typeconv import Conversion
+       
+    1: _logger = logging.getLogger(__name__)
+       
+       
+       # terminal color markup
+    1: _termcolor = errors.termcolor()
+       
+    1: _FAILURE = namedtuple('_FAILURE', 'template matched error literal')
+       
+    1: _termwidth = get_terminal_size().columns
+       
+       
+       # pull out the lead line as unit tests often use this
+    1: _header_lead = "No implementation of function"
+    1: _header_template = (_header_lead + " {the_function} found for signature:\n \n "
+                           ">>> {fname}({signature})\n \nThere are {ncandidates} "
+                           "candidate implementations:")
+       
+    1: _reason_template = """
+       " - Of which {nmatches} did not match due to:\n
+       """
+       
+       
+    1: def _wrapper(tmp, indent=0):
+           return textwrap.indent(tmp, ' ' * indent, lambda line: True)
+       
+       
+    1: _overload_template = ("- Of which {nduplicates} did not match due to:\n"
+                             "{kind} {inof} function '{function}': File: {file}: "
+                             "Line {line}.\n  With argument(s): '({args})':")
+       
+       
+    1: _err_reasons = {'specific_error': "Rejected as the implementation raised a "
+                                         "specific error:\n{}"}
+       
+       
+    1: def _bt_as_lines(bt):
+           """
+           Converts a backtrace into a list of lines, squashes it a bit on the way.
+           """
+           return [y for y in itertools.chain(*[x.split('\n') for x in bt]) if y]
+       
+       
+    1: def argsnkwargs_to_str(args, kwargs):
+           buf = [str(a) for a in tuple(args)]
+           buf.extend(["{}={}".format(k, v) for k, v in kwargs.items()])
+           return ', '.join(buf)
+       
+       
+    2: class _ResolutionFailures(object):
+    1:     """Collect and format function resolution failures.
+           """
+    1:     def __init__(self, context, function_type, args, kwargs, depth=0):
+  455:         self._context = context
+  455:         self._function_type = function_type
+  455:         self._args = args
+  455:         self._kwargs = kwargs
+  455:         self._failures = defaultdict(list)
+  455:         self._depth = depth
+  455:         self._max_depth = 5
+  455:         self._scale = 2
+       
+    1:     def __len__(self):
+               return len(self._failures)
+       
+    1:     def add_error(self, calltemplate, matched, error, literal):
+               """
+               Args
+               ----
+               calltemplate : CallTemplate
+               error : Exception or str
+                   Error message
+               """
+ 1879:         isexc = isinstance(error, Exception)
+ 1879:         errclazz = '%s: ' % type(error).__name__ if isexc else ''
+       
+ 1879:         key = "{}{}".format(errclazz, str(error))
+ 3758:         self._failures[key].append(_FAILURE(calltemplate, matched, error,
+ 1879:                                             literal))
+       
+    1:     def format(self):
+               """Return a formatted error message from all the gathered errors.
+               """
+               indent = ' ' * self._scale
+               argstr = argsnkwargs_to_str(self._args, self._kwargs)
+               ncandidates = sum([len(x) for x in self._failures.values()])
+       
+               # sort out a display name for the function
+               tykey = self._function_type.typing_key
+               # most things have __name__
+               fname = getattr(tykey, '__name__', None)
+               is_external_fn_ptr = isinstance(self._function_type,
+                                               ExternalFunctionPointer)
+       
+               if fname is None:
+                   if is_external_fn_ptr:
+                       fname = "ExternalFunctionPointer"
+                   else:
+                       fname = "<unknown function>"
+       
+               msgbuf = [_header_template.format(the_function=self._function_type,
+                                                 fname=fname,
+                                                 signature=argstr,
+                                                 ncandidates=ncandidates)]
+               nolitargs = tuple([unliteral(a) for a in self._args])
+               nolitkwargs = {k: unliteral(v) for k, v in self._kwargs.items()}
+               nolitargstr = argsnkwargs_to_str(nolitargs, nolitkwargs)
+       
+               # depth could potentially get massive, so limit it.
+               ldepth = min(max(self._depth, 0), self._max_depth)
+       
+               def template_info(tp):
+                   src_info = tp.get_template_info()
+                   unknown = "unknown"
+                   source_name = src_info.get('name', unknown)
+                   source_file = src_info.get('filename', unknown)
+                   source_lines = src_info.get('lines', unknown)
+                   source_kind = src_info.get('kind', 'Unknown template')
+                   return source_name, source_file, source_lines, source_kind
+       
+               for i, (k, err_list) in enumerate(self._failures.items()):
+                   err = err_list[0]
+                   nduplicates = len(err_list)
+                   template, error = err.template, err.error
+                   ifo = template_info(template)
+                   source_name, source_file, source_lines, source_kind = ifo
+                   largstr = argstr if err.literal else nolitargstr
+       
+                   if err.error == "No match.":
+                       err_dict = defaultdict(set)
+                       for errs in err_list:
+                           err_dict[errs.template].add(errs.literal)
+                       # if there's just one template, and it's erroring on
+                       # literal/nonliteral be specific
+                       if len(err_dict) == 1:
+                           template = [_ for _ in err_dict.keys()][0]
+                           source_name, source_file, source_lines, source_kind = \
+                               template_info(template)
+                           source_lines = source_lines[0]
+                       else:
+                           source_file = "<numerous>"
+                           source_lines = "N/A"
+       
+                       msgbuf.append(_termcolor.errmsg(
+                           _wrapper(_overload_template.format(nduplicates=nduplicates,
+                                                              kind=source_kind.title(),
+                                                              function=fname,
+                                                              inof='of',
+                                                              file=source_file,
+                                                              line=source_lines,
+                                                              args=largstr),
+                                    ldepth + 1)))
+                       msgbuf.append(_termcolor.highlight(_wrapper(err.error,
+                                                                   ldepth + 2)))
+                   else:
+                       # There was at least one match in this failure class, but it
+                       # failed for a specific reason try and report this.
+                       msgbuf.append(_termcolor.errmsg(
+                           _wrapper(_overload_template.format(nduplicates=nduplicates,
+                                                              kind=source_kind.title(),
+                                                              function=source_name,
+                                                              inof='in',
+                                                              file=source_file,
+                                                              line=source_lines[0],
+                                                              args=largstr),
+                                    ldepth + 1)))
+       
+                       if isinstance(error, BaseException):
+                           reason = indent + self.format_error(error)
+                           errstr = _err_reasons['specific_error'].format(reason)
+                       else:
+                           errstr = error
+                       # if you are a developer, show the back traces
+                       if config.DEVELOPER_MODE:
+                           if isinstance(error, BaseException):
+                               # if the error is an actual exception instance, trace it
+                               bt = traceback.format_exception(type(error), error,
+                                                               error.__traceback__)
+                           else:
+                               bt = [""]
+                           bt_as_lines = _bt_as_lines(bt)
+                           nd2indent = '\n{}'.format(2 * indent)
+                           errstr += _termcolor.reset(nd2indent +
+                                                      nd2indent.join(bt_as_lines))
+                       msgbuf.append(_termcolor.highlight(_wrapper(errstr,
+                                                                   ldepth + 2)))
+                       loc = self.get_loc(template, error)
+                       if loc:
+                           msgbuf.append('{}raised from {}'.format(indent, loc))
+       
+               # the commented bit rewraps each block, may not be helpful?!
+               return _wrapper('\n'.join(msgbuf) + '\n') # , self._scale * ldepth)
+       
+    1:     def format_error(self, error):
+               """Format error message or exception
+               """
+               if isinstance(error, Exception):
+                   return '{}: {}'.format(type(error).__name__, error)
+               else:
+                   return '{}'.format(error)
+       
+    1:     def get_loc(self, classtemplate, error):
+               """Get source location information from the error message.
+               """
+               if isinstance(error, Exception) and hasattr(error, '__traceback__'):
+                   # traceback is unavailable in py2
+                   frame = traceback.extract_tb(error.__traceback__)[-1]
+                   return "{}:{}".format(frame[0], frame[1])
+       
+    1:     def raise_error(self):
+               for faillist in self._failures.values():
+                   for fail in faillist:
+                       if isinstance(fail.error, errors.ForceLiteralArg):
+                           raise fail.error
+               raise errors.TypingError(self.format())
+       
+       
+    1: def _unlit_non_poison(ty):
+           """Apply unliteral(ty) and raise a TypingError if type is Poison.
+           """
+ 2598:     out = unliteral(ty)
+ 2598:     if isinstance(out, types.Poison):
+               m = f"Poison type used in arguments; got {out}"
+               raise errors.TypingError(m)
+ 2598:     return out
+       
+       
+    2: class BaseFunction(Callable):
+    1:     """
+           Base type class for some function types.
+           """
+       
+    1:     def __init__(self, template):
+       
+ 1845:         if isinstance(template, (list, tuple)):
+  323:             self.templates = tuple(template)
+ 2057:             keys = set(temp.key for temp in self.templates)
+  323:             if len(keys) != 1:
+                       raise ValueError("incompatible templates: keys = %s"
+                                        % (keys,))
+  323:             self.typing_key, = keys
+               else:
+ 1522:             self.templates = (template,)
+ 1522:             self.typing_key = template.key
+ 1845:         self._impl_keys = {}
+ 1845:         name = "%s(%s)" % (self.__class__.__name__, self.typing_key)
+ 1845:         self._depth = 0
+ 1845:         super(BaseFunction, self).__init__(name)
+       
+    2:     @property
+    2:     def key(self):
+ 4093:         return self.typing_key, self.templates
+       
+    1:     def augment(self, other):
+               """
+               Augment this function type with the other function types' templates,
+               so as to support more input types.
+               """
+  323:         if type(other) is type(self) and other.typing_key == self.typing_key:
+  323:             return type(self)(self.templates + other.templates)
+       
+    1:     def get_impl_key(self, sig):
+               """
+               Get the implementation key (used by the target context) for the
+               given signature.
+               """
+  176:         return self._impl_keys[sig.args]
+       
+    1:     def get_call_type(self, context, args, kws):
+       
+  455:         prefer_lit = [True, False]    # old behavior preferring literal
+  455:         prefer_not = [False, True]    # new behavior preferring non-literal
+  910:         failures = _ResolutionFailures(context, self, args, kws,
+  455:                                        depth=self._depth)
+       
+               # get the order in which to try templates
+  455:         from numba.core.target_extension import get_local_target # circular
+  455:         target_hw = get_local_target(context)
+  910:         order = utils.order_by_target_specificity(target_hw, self.templates,
+  455:                                                   fnkey=self.key[0])
+       
+  455:         self._depth += 1
+       
+ 1393:         for temp_cls in order:
+ 1393:             temp = temp_cls(context)
+                   # The template can override the default and prefer literal args
+ 1393:             choice = prefer_lit if temp.prefer_literal else prefer_not
+ 3272:             for uselit in choice:
+ 2334:                 try:
+ 2334:                     if uselit:
+  941:                         sig = temp.apply(args, kws)
+                           else:
+ 5376:                         nolitargs = tuple([_unlit_non_poison(a) for a in args])
+ 4187:                         nolitkws = {k: _unlit_non_poison(v)
+ 1397:                                     for k, v in kws.items()}
+ 1393:                         sig = temp.apply(nolitargs, nolitkws)
+                       except Exception as e:
+                           if (utils.use_new_style_errors() and not
+                                   isinstance(e, errors.NumbaError)):
+                               raise e
+                           else:
+                               sig = None
+                               failures.add_error(temp, False, e, uselit)
+                       else:
+ 2334:                     if sig is not None:
+  455:                         self._impl_keys[sig.args] = temp.get_impl_key(sig)
+  455:                         self._depth -= 1
+  455:                         return sig
+                           else:
+ 1879:                         registered_sigs = getattr(temp, 'cases', None)
+ 1879:                         if registered_sigs is not None:
+                                   msg = "No match for registered cases:\n%s"
+                                   msg = msg % '\n'.join(" * {}".format(x) for x in
+                                                         registered_sigs)
+                               else:
+ 1879:                             msg = 'No match.'
+ 1879:                         failures.add_error(temp, True, msg, uselit)
+       
+               failures.raise_error()
+       
+    1:     def get_call_signatures(self):
+               sigs = []
+               is_param = False
+               for temp in self.templates:
+                   sigs += getattr(temp, 'cases', [])
+                   is_param = is_param or hasattr(temp, 'generic')
+               return sigs, is_param
+       
+       
+    2: class Function(BaseFunction, Opaque):
+    1:     """
+           Type class for builtin functions implemented by Numba.
+           """
+       
+       
+    2: class BoundFunction(Callable, Opaque):
+    1:     """
+           A function with an implicit first argument (denoted as *this* below).
+           """
+       
+    1:     def __init__(self, template, this):
+               # Create a derived template with an attribute *this*
+   12:         newcls = type(template.__name__ + '.' + str(this), (template,),
+    6:                       dict(this=this))
+    6:         self.template = newcls
+    6:         self.typing_key = self.template.key
+    6:         self.this = this
+   12:         name = "%s(%s for %s)" % (self.__class__.__name__,
+    6:                                   self.typing_key, self.this)
+    6:         super(BoundFunction, self).__init__(name)
+       
+    1:     def unify(self, typingctx, other):
+               if (isinstance(other, BoundFunction) and
+                       self.typing_key == other.typing_key):
+                   this = typingctx.unify_pairs(self.this, other.this)
+                   if this is not None:
+                       # XXX is it right that both template instances are distinct?
+                       return self.copy(this=this)
+       
+    1:     def copy(self, this):
+               return type(self)(self.template, this)
+       
+    2:     @property
+    2:     def key(self):
+               # FIXME: With target-overload, the MethodTemplate can change depending
+               #        on the target.
+   44:         unique_impl = getattr(self.template, "_overload_func", None)
+   44:         return self.typing_key, self.this, unique_impl
+       
+    1:     def get_impl_key(self, sig):
+               """
+               Get the implementation key (used by the target context) for the
+               given signature.
+               """
+    2:         return self.typing_key
+       
+    1:     def get_call_type(self, context, args, kws):
+    4:         template = self.template(context)
+    4:         literal_e = None
+    4:         nonliteral_e = None
+    4:         out = None
+       
+    4:         choice = [True, False] if template.prefer_literal else [False, True]
+    8:         for uselit in choice:
+    8:             if uselit:
+                       # Try with Literal
+    4:                 try:
+    4:                     out = template.apply(args, kws)
+                       except Exception as exc:
+                           if (utils.use_new_style_errors() and not
+                                   isinstance(exc, errors.NumbaError)):
+                               raise exc
+                           if isinstance(exc, errors.ForceLiteralArg):
+                               raise exc
+                           literal_e = exc
+                           out = None
+                       else:
+    4:                     break
+                   else:
+                       # if the unliteral_args and unliteral_kws are the same as the
+                       # literal ones, set up to not bother retrying
+   12:                 unliteral_args = tuple([_unlit_non_poison(a) for a in args])
+   12:                 unliteral_kws = {k: _unlit_non_poison(v)
+    4:                                  for k, v in kws.items()}
+    4:                 skip = unliteral_args == args and kws == unliteral_kws
+       
+                       # If the above template application failed and the non-literal
+                       # args are different to the literal ones, try again with
+                       # literals rewritten as non-literals
+    4:                 if not skip and out is None:
+                           try:
+                               out = template.apply(unliteral_args, unliteral_kws)
+                           except Exception as exc:
+                               if isinstance(exc, errors.ForceLiteralArg):
+                                   if template.prefer_literal:
+                                       # For template that prefers literal types,
+                                       # reaching here means that the literal types
+                                       # have failed typing as well.
+                                       raise exc
+                               nonliteral_e = exc
+                           else:
+                               break
+       
+    4:         if out is None and (nonliteral_e is not None or literal_e is not None):
+                   header = "- Resolution failure for {} arguments:\n{}\n"
+                   tmplt = _termcolor.highlight(header)
+                   if config.DEVELOPER_MODE:
+                       indent = ' ' * 4
+       
+                       def add_bt(error):
+                           if isinstance(error, BaseException):
+                               # if the error is an actual exception instance, trace it
+                               bt = traceback.format_exception(type(error), error,
+                                                               error.__traceback__)
+                           else:
+                               bt = [""]
+                           nd2indent = '\n{}'.format(2 * indent)
+                           errstr = _termcolor.reset(nd2indent +
+                                                     nd2indent.join(_bt_as_lines(bt)))
+                           return _termcolor.reset(errstr)
+                   else:
+                       add_bt = lambda X: ''
+       
+                   def nested_msg(literalness, e):
+                       estr = str(e)
+                       estr = estr if estr else (str(repr(e)) + add_bt(e))
+                       new_e = errors.TypingError(textwrap.dedent(estr))
+                       return tmplt.format(literalness, str(new_e))
+       
+                   raise errors.TypingError(nested_msg('literal', literal_e) +
+                                            nested_msg('non-literal', nonliteral_e))
+    4:         return out
+       
+    1:     def get_call_signatures(self):
+               sigs = getattr(self.template, 'cases', [])
+               is_param = hasattr(self.template, 'generic')
+               return sigs, is_param
+       
+       
+    2: class MakeFunctionLiteral(Literal, Opaque):
+    1:     pass
+       
+       
+    2: class _PickleableWeakRef(weakref.ref):
+    1:     """
+           Allow a weakref to be pickled.
+       
+           Note that if the object referred to is not kept alive elsewhere in the
+           pickle, the weakref will immediately expire after being constructed.
+           """
+    1:     def __getnewargs__(self):
+               obj = self()
+               if obj is None:
+                   raise ReferenceError("underlying object has vanished")
+               return (obj,)
+       
+       
+    2: class WeakType(Type):
+    1:     """
+           Base class for types parametered by a mortal object, to which only
+           a weak reference is kept.
+           """
+       
+    1:     def _store_object(self, obj):
+  119:         self._wr = _PickleableWeakRef(obj)
+       
+    1:     def _get_object(self):
+  107:         obj = self._wr()
+  107:         if obj is None:
+                   raise ReferenceError("underlying object has vanished")
+  107:         return obj
+       
+    2:     @property
+    2:     def key(self):
+  119:         return self._wr
+       
+    1:     def __eq__(self, other):
+   61:         if type(self) is type(other):
+   61:             obj = self._wr()
+   61:             return obj is not None and obj is other._wr()
+               return NotImplemented
+       
+    1:     def __hash__(self):
+  119:         return Type.__hash__(self)
+       
+       
+    2: class Dispatcher(WeakType, Callable, Dummy):
+    1:     """
+           Type class for @jit-compiled functions.
+           """
+       
+    1:     def __init__(self, dispatcher):
+  119:         self._store_object(dispatcher)
+  119:         super(Dispatcher, self).__init__("type(%s)" % dispatcher)
+       
+    1:     def dump(self, tab=''):
+               print((f'{tab}DUMP {type(self).__name__}[code={self._code}, '
+                      f'name={self.name}]'))
+               self.dispatcher.dump(tab=tab + '  ')
+               print(f'{tab}END DUMP')
+       
+    1:     def get_call_type(self, context, args, kws):
+               """
+               Resolve a call to this dispatcher using the given argument types.
+               A signature returned and it is ensured that a compiled specialization
+               is available for it.
+               """
+   61:         template, pysig, args, kws = \
+   61:             self.dispatcher.get_call_template(args, kws)
+   61:         sig = template(context).apply(args, kws)
+   61:         if sig:
+   61:             sig = sig.replace(pysig=pysig)
+   61:             return sig
+       
+    1:     def get_call_signatures(self):
+               sigs = self.dispatcher.nopython_signatures
+               return sigs, True
+       
+    2:     @property
+    2:     def dispatcher(self):
+               """
+               A strong reference to the underlying numba.dispatcher.Dispatcher
+               instance.
+               """
+  107:         disp = self._get_object()
+               # TODO: improve interface to avoid the dynamic check here
+  107:         if hasattr(disp, "_get_dispatcher_for_current_target"):
+  107:             return disp._get_dispatcher_for_current_target()
+               else:
+                   return disp
+       
+    1:     def get_overload(self, sig):
+               """
+               Get the compiled overload for the given signature.
+               """
+   46:         return self.dispatcher.get_overload(sig.args)
+       
+    1:     def get_impl_key(self, sig):
+               """
+               Get the implementation key for the given signature.
+               """
+               return self.get_overload(sig)
+       
+    1:     def unify(self, context, other):
+               return utils.unified_function_type((self, other), require_precise=False)
+       
+    1:     def can_convert_to(self, typingctx, other):
+               if isinstance(other, types.FunctionType):
+                   try:
+                       self.dispatcher.get_compile_result(other.signature)
+                   except errors.NumbaError:
+                       return None
+                   else:
+                       return Conversion.safe
+       
+       
+    2: class ObjModeDispatcher(Dispatcher):
+    1:     """Dispatcher subclass that enters objectmode function.
+           """
+    1:     pass
+       
+       
+    2: class ExternalFunctionPointer(BaseFunction):
+    1:     """
+           A pointer to a native function (e.g. exported via ctypes or cffi).
+           *get_pointer* is a Python function taking an object
+           and returning the raw pointer value as an int.
+           """
+    1:     def __init__(self, sig, get_pointer, cconv=None):
+               from numba.core.typing.templates import (AbstractTemplate,
+                                                        make_concrete_template,
+                                                        signature)
+               from numba.core.types import ffi_forced_object
+               if sig.return_type == ffi_forced_object:
+                   raise TypeError("Cannot return a pyobject from a external function")
+               self.sig = sig
+               self.requires_gil = any(a == ffi_forced_object for a in self.sig.args)
+               self.get_pointer = get_pointer
+               self.cconv = cconv
+               if self.requires_gil:
+                   class GilRequiringDefn(AbstractTemplate):
+                       key = self.sig
+       
+                       def generic(self, args, kws):
+                           if kws:
+                               raise TypeError("does not support keyword arguments")
+                           # Make ffi_forced_object a bottom type to allow any type to
+                           # be casted to it. This is the only place that support
+                           # ffi_forced_object.
+                           coerced = [actual if formal == ffi_forced_object else formal
+                                      for actual, formal
+                                      in zip(args, self.key.args)]
+                           return signature(self.key.return_type, *coerced)
+                   template = GilRequiringDefn
+               else:
+                   template = make_concrete_template("CFuncPtr", sig, [sig])
+               super(ExternalFunctionPointer, self).__init__(template)
+       
+    2:     @property
+    2:     def key(self):
+               return self.sig, self.cconv, self.get_pointer
+       
+       
+    2: class ExternalFunction(Function):
+    1:     """
+           A named native function (resolvable by LLVM) accepting an explicit
+           signature. For internal use only.
+           """
+       
+    1:     def __init__(self, symbol, sig):
+    1:         from numba.core import typing
+    1:         self.symbol = symbol
+    1:         self.sig = sig
+    1:         template = typing.make_concrete_template(symbol, symbol, [sig])
+    1:         super(ExternalFunction, self).__init__(template)
+       
+    2:     @property
+    2:     def key(self):
+    1:         return self.symbol, self.sig
+       
+       
+    2: class NamedTupleClass(Callable, Opaque):
+    1:     """
+           Type class for namedtuple classes.
+           """
+       
+    1:     def __init__(self, instance_class):
+    1:         self.instance_class = instance_class
+    1:         name = "class(%s)" % (instance_class)
+    1:         super(NamedTupleClass, self).__init__(name)
+       
+    1:     def get_call_type(self, context, args, kws):
+               # Overridden by the __call__ constructor resolution in
+               # typing.collections
+               return None
+       
+    1:     def get_call_signatures(self):
+               return (), True
+       
+    1:     def get_impl_key(self, sig):
+    1:         return type(self)
+       
+    2:     @property
+    2:     def key(self):
+   12:         return self.instance_class
+       
+       
+    2: class NumberClass(Callable, DTypeSpec, Opaque):
+    1:     """
+           Type class for number classes (e.g. "np.float64").
+           """
+       
+    1:     def __init__(self, instance_type):
+   19:         self.instance_type = instance_type
+   19:         name = "class(%s)" % (instance_type,)
+   19:         super(NumberClass, self).__init__(name)
+       
+    1:     def get_call_type(self, context, args, kws):
+               # Overridden by the __call__ constructor resolution in typing.builtins
+               return None
+       
+    1:     def get_call_signatures(self):
+               return (), True
+       
+    1:     def get_impl_key(self, sig):
+    2:         return type(self)
+       
+    2:     @property
+    2:     def key(self):
+  325:         return self.instance_type
+       
+    2:     @property
+    2:     def dtype(self):
+    1:         return self.instance_type
+       
+       
+    1: _RecursiveCallOverloads = namedtuple("_RecursiveCallOverloads", "qualname,uid")
+       
+       
+    2: class RecursiveCall(Opaque):
+    1:     """
+           Recursive call to a Dispatcher.
+           """
+    1:     _overloads = None
+       
+    1:     def __init__(self, dispatcher_type):
+               assert isinstance(dispatcher_type, Dispatcher)
+               self.dispatcher_type = dispatcher_type
+               name = "recursive(%s)" % (dispatcher_type,)
+               super(RecursiveCall, self).__init__(name)
+               # Initializing for the first time
+               if self._overloads is None:
+                   self._overloads = {}
+       
+    1:     def add_overloads(self, args, qualname, uid):
+               """Add an overload of the function.
+       
+               Parameters
+               ----------
+               args :
+                   argument types
+               qualname :
+                   function qualifying name
+               uid :
+                   unique id
+               """
+               self._overloads[args] = _RecursiveCallOverloads(qualname, uid)
+       
+    1:     def get_overloads(self, args):
+               """Get the qualifying name and unique id for the overload given the
+               argument types.
+               """
+               return self._overloads[args]
+       
+    2:     @property
+    2:     def key(self):
+               return self.dispatcher_type

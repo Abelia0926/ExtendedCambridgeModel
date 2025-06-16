@@ -1,0 +1,21 @@
+    1: """
+       Target Descriptors
+       """
+       
+    1: from abc import ABCMeta, abstractmethod
+       
+       
+    2: class TargetDescriptor(metaclass=ABCMeta):
+       
+    1:     def __init__(self, target_name):
+    2:         self._target_name = target_name
+       
+    2:     @property
+    2:     @abstractmethod
+    2:     def typing_context(self):
+               ...
+       
+    2:     @property
+    2:     @abstractmethod
+    2:     def target_context(self):
+               ...

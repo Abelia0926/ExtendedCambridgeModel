@@ -1,0 +1,1119 @@
+    1: import contextlib
+    1: import functools
+       
+    1: from llvmlite.ir import instructions, types, values
+       
+    1: _CMP_MAP = {
+    1:     '>': 'gt',
+    1:     '<': 'lt',
+    1:     '==': 'eq',
+    1:     '!=': 'ne',
+    1:     '>=': 'ge',
+    1:     '<=': 'le',
+       }
+       
+       
+    1: def _unop(opname, cls=instructions.Instruction):
+    1:     def wrap(fn):
+    2:         @functools.wraps(fn)
+    2:         def wrapped(self, arg, name='', flags=()):
+                   instr = cls(self.block, arg.type, opname, [arg], name, flags)
+                   self._insert(instr)
+                   return instr
+       
+    1:         return wrapped
+       
+    1:     return wrap
+       
+       
+    1: def _binop(opname, cls=instructions.Instruction):
+   18:     def wrap(fn):
+   36:         @functools.wraps(fn)
+   36:         def wrapped(self, lhs, rhs, name='', flags=()):
+  615:             if lhs.type != rhs.type:
+                       raise ValueError("Operands must be the same type, got (%s, %s)"
+                                        % (lhs.type, rhs.type))
+  615:             instr = cls(self.block, lhs.type, opname, (lhs, rhs), name, flags)
+  615:             self._insert(instr)
+  615:             return instr
+       
+   18:         return wrapped
+       
+   18:     return wrap
+       
+       
+    1: def _binop_with_overflow(opname, cls=instructions.Instruction):
+    6:     def wrap(fn):
+   12:         @functools.wraps(fn)
+   12:         def wrapped(self, lhs, rhs, name=''):
+   16:             if lhs.type != rhs.type:
+                       raise ValueError("Operands must be the same type, got (%s, %s)"
+                                        % (lhs.type, rhs.type))
+   16:             ty = lhs.type
+   16:             if not isinstance(ty, types.IntType):
+                       raise TypeError("expected an integer type, got %s" % (ty,))
+   16:             bool_ty = types.IntType(1)
+       
+   16:             mod = self.module
+   32:             fnty = types.FunctionType(types.LiteralStructType([ty, bool_ty]),
+   16:                                       [ty, ty])
+   32:             fn = mod.declare_intrinsic("llvm.%s.with.overflow" % (opname,),
+   16:                                        [ty], fnty)
+   16:             ret = self.call(fn, [lhs, rhs], name=name)
+   16:             return ret
+       
+    6:         return wrapped
+       
+    6:     return wrap
+       
+       
+    1: def _uniop(opname, cls=instructions.Instruction):
+           def wrap(fn):
+               @functools.wraps(fn)
+               def wrapped(self, operand, name=''):
+                   instr = cls(self.block, operand.type, opname, [operand], name)
+                   self._insert(instr)
+                   return instr
+       
+               return wrapped
+       
+           return wrap
+       
+       
+    1: def _uniop_intrinsic_int(opname):
+    3:     def wrap(fn):
+    6:         @functools.wraps(fn)
+    6:         def wrapped(self, operand, name=''):
+                   if not isinstance(operand.type, types.IntType):
+                       raise TypeError(
+                           "expected an integer type, got %s" %
+                           operand.type)
+                   fn = self.module.declare_intrinsic(opname, [operand.type])
+                   return self.call(fn, [operand], name)
+       
+    3:         return wrapped
+       
+    3:     return wrap
+       
+       
+    1: def _uniop_intrinsic_float(opname):
+    1:     def wrap(fn):
+    2:         @functools.wraps(fn)
+    2:         def wrapped(self, operand, name=''):
+                   if not isinstance(
+                           operand.type, (types.FloatType, types.DoubleType)):
+                       raise TypeError("expected a float type, got %s" % operand.type)
+                   fn = self.module.declare_intrinsic(opname, [operand.type])
+                   return self.call(fn, [operand], name)
+       
+    1:         return wrapped
+       
+    1:     return wrap
+       
+       
+    1: def _uniop_intrinsic_with_flag(opname):
+    2:     def wrap(fn):
+    4:         @functools.wraps(fn)
+    4:         def wrapped(self, operand, flag, name=''):
+                   if not isinstance(operand.type, types.IntType):
+                       raise TypeError(
+                           "expected an integer type, got %s" %
+                           operand.type)
+                   if not (isinstance(flag.type, types.IntType) and
+                           flag.type.width == 1):
+                       raise TypeError("expected an i1 type, got %s" % flag.type)
+                   fn = self.module.declare_intrinsic(
+                       opname, [operand.type, flag.type])
+                   return self.call(fn, [operand, flag], name)
+       
+    2:         return wrapped
+       
+    2:     return wrap
+       
+       
+    1: def _triop_intrinsic(opname):
+    1:     def wrap(fn):
+    2:         @functools.wraps(fn)
+    2:         def wrapped(self, a, b, c, name=''):
+                   if a.type != b.type or b.type != c.type:
+                       raise TypeError(
+                           "expected types to be the same, got %s, %s, %s" % (
+                               a.type,
+                               b.type,
+                               c.type))
+                   elif not isinstance(
+                           a.type,
+                           (types.HalfType, types.FloatType, types.DoubleType)):
+                       raise TypeError(
+                           "expected an floating point type, got %s" %
+                           a.type)
+                   fn = self.module.declare_intrinsic(opname, [a.type, b.type, c.type])
+                   return self.call(fn, [a, b, c], name)
+       
+    1:         return wrapped
+       
+    1:     return wrap
+       
+       
+    1: def _castop(opname, cls=instructions.CastInstr):
+   13:     def wrap(fn):
+   26:         @functools.wraps(fn)
+   26:         def wrapped(self, val, typ, name=''):
+  109:             if val.type == typ:
+    1:                 return val
+  108:             instr = cls(self.block, opname, val, typ, name)
+  108:             self._insert(instr)
+  108:             return instr
+       
+   13:         return wrapped
+       
+   13:     return wrap
+       
+       
+    1: def _label_suffix(label, suffix):
+           """Returns (label + suffix) or a truncated version if it's too long.
+           Parameters
+           ----------
+           label : str
+               Label name
+           suffix : str
+               Label suffix
+           """
+  775:     if len(label) > 50:
+   11:         nhead = 25
+   11:         return ''.join([label[:nhead], '..', suffix])
+           else:
+  764:         return label + suffix
+       
+       
+    2: class IRBuilder(object):
+    1:     def __init__(self, block=None):
+   44:         self._block = block
+   44:         self._anchor = len(block.instructions) if block else 0
+   44:         self.debug_metadata = None
+       
+    2:     @property
+    2:     def block(self):
+               """
+               The current basic block.
+               """
+15131:         return self._block
+       
+    1:     basic_block = block
+       
+    2:     @property
+    2:     def function(self):
+               """
+               The current function.
+               """
+ 1570:         return self.block.parent
+       
+    2:     @property
+    2:     def module(self):
+               """
+               The current module.
+               """
+  337:         return self.block.parent.module
+       
+    1:     def position_before(self, instr):
+               """
+               Position immediately before the given instruction.  The current block
+               is also changed to the instruction's basic block.
+               """
+   30:         self._block = instr.parent
+   30:         self._anchor = self._block.instructions.index(instr)
+       
+    1:     def position_after(self, instr):
+               """
+               Position immediately after the given instruction.  The current block
+               is also changed to the instruction's basic block.
+               """
+               self._block = instr.parent
+               self._anchor = self._block.instructions.index(instr) + 1
+       
+    1:     def position_at_start(self, block):
+               """
+               Position at the start of the basic *block*.
+               """
+               self._block = block
+               self._anchor = 0
+       
+    1:     def position_at_end(self, block):
+               """
+               Position at the end of the basic *block*.
+               """
+ 1814:         self._block = block
+ 1814:         self._anchor = len(block.instructions)
+       
+    1:     def append_basic_block(self, name=''):
+               """
+               Append a basic block, with the given optional *name*, to the current
+               function.  The current block is not changed.  The new block is returned.
+               """
+  852:         return self.function.append_basic_block(name)
+       
+    1:     def remove(self, instr):
+               """Remove the given instruction."""
+               idx = self._block.instructions.index(instr)
+               del self._block.instructions[idx]
+               if self._block.terminator == instr:
+                   self._block.terminator = None
+               if self._anchor > idx:
+                   self._anchor -= 1
+       
+    2:     @contextlib.contextmanager
+    2:     def goto_block(self, block):
+               """
+               A context manager which temporarily positions the builder at the end
+               of basic block *bb* (but before any terminator).
+               """
+  455:         old_block = self.basic_block
+  455:         term = block.terminator
+  455:         if term is not None:
+   30:             self.position_before(term)
+               else:
+  425:             self.position_at_end(block)
+  455:         try:
+  455:             yield
+               finally:
+  455:             self.position_at_end(old_block)
+       
+    2:     @contextlib.contextmanager
+    2:     def goto_entry_block(self):
+               """
+               A context manager which temporarily positions the builder at the
+               end of the function's entry block.
+               """
+  810:         with self.goto_block(self.function.entry_basic_block):
+  405:             yield
+       
+    2:     @contextlib.contextmanager
+    2:     def _branch_helper(self, bbenter, bbexit):
+  411:         self.position_at_end(bbenter)
+  411:         yield bbexit
+  411:         if self.basic_block.terminator is None:
+  262:             self.branch(bbexit)
+       
+    2:     @contextlib.contextmanager
+    2:     def if_then(self, pred, likely=None):
+               """
+               A context manager which sets up a conditional basic block based
+               on the given predicate (a i1 value).  If the conditional block
+               is not explicitly terminated, a branch will be added to the next
+               block.
+               If *likely* is given, its boolean value indicates whether the
+               predicate is likely to be true or not, and metadata is issued
+               for LLVM's optimizers to account for that.
+               """
+  317:         bb = self.basic_block
+  317:         bbif = self.append_basic_block(name=_label_suffix(bb.name, '.if'))
+  317:         bbend = self.append_basic_block(name=_label_suffix(bb.name, '.endif'))
+  317:         br = self.cbranch(pred, bbif, bbend)
+  317:         if likely is not None:
+  226:             br.set_weights([99, 1] if likely else [1, 99])
+       
+  634:         with self._branch_helper(bbif, bbend):
+  317:             yield bbend
+       
+  317:         self.position_at_end(bbend)
+       
+    2:     @contextlib.contextmanager
+    2:     def if_else(self, pred, likely=None):
+               """
+               A context manager which sets up two conditional basic blocks based
+               on the given predicate (a i1 value).
+               A tuple of context managers is yield'ed.  Each context manager
+               acts as a if_then() block.
+               *likely* has the same meaning as in if_then().
+       
+               Typical use::
+                   with builder.if_else(pred) as (then, otherwise):
+                       with then:
+                           # emit instructions for when the predicate is true
+                       with otherwise:
+                           # emit instructions for when the predicate is false
+               """
+   47:         bb = self.basic_block
+   47:         bbif = self.append_basic_block(name=_label_suffix(bb.name, '.if'))
+   47:         bbelse = self.append_basic_block(name=_label_suffix(bb.name, '.else'))
+   47:         bbend = self.append_basic_block(name=_label_suffix(bb.name, '.endif'))
+   47:         br = self.cbranch(pred, bbif, bbelse)
+   47:         if likely is not None:
+    2:             br.set_weights([99, 1] if likely else [1, 99])
+       
+   47:         then = self._branch_helper(bbif, bbend)
+   47:         otherwise = self._branch_helper(bbelse, bbend)
+       
+   47:         yield then, otherwise
+       
+   47:         self.position_at_end(bbend)
+       
+    1:     def _insert(self, instr):
+ 9830:         if self.debug_metadata is not None and 'dbg' not in instr.metadata:
+                   instr.metadata['dbg'] = self.debug_metadata
+ 9830:         self._block.instructions.insert(self._anchor, instr)
+ 9830:         self._anchor += 1
+       
+    1:     def _set_terminator(self, term):
+ 1004:         assert not self.block.is_terminated
+ 1004:         self._insert(term)
+ 1004:         self.block.terminator = term
+ 1004:         return term
+       
+           #
+           # Arithmetic APIs
+           #
+       
+    2:     @_binop('shl')
+    2:     def shl(self, lhs, rhs, name=''):
+               """
+               Left integer shift:
+                   name = lhs << rhs
+               """
+       
+    2:     @_binop('lshr')
+    2:     def lshr(self, lhs, rhs, name=''):
+               """
+               Logical (unsigned) right integer shift:
+                   name = lhs >> rhs
+               """
+       
+    2:     @_binop('ashr')
+    2:     def ashr(self, lhs, rhs, name=''):
+               """
+               Arithmetic (signed) right integer shift:
+                   name = lhs >> rhs
+               """
+       
+    2:     @_binop('add')
+    2:     def add(self, lhs, rhs, name=''):
+               """
+               Integer addition:
+                   name = lhs + rhs
+               """
+       
+    2:     @_binop('fadd')
+    2:     def fadd(self, lhs, rhs, name=''):
+               """
+               Floating-point addition:
+                   name = lhs + rhs
+               """
+       
+    2:     @_binop('sub')
+    2:     def sub(self, lhs, rhs, name=''):
+               """
+               Integer subtraction:
+                   name = lhs - rhs
+               """
+       
+    2:     @_binop('fsub')
+    2:     def fsub(self, lhs, rhs, name=''):
+               """
+               Floating-point subtraction:
+                   name = lhs - rhs
+               """
+       
+    2:     @_binop('mul')
+    2:     def mul(self, lhs, rhs, name=''):
+               """
+               Integer multiplication:
+                   name = lhs * rhs
+               """
+       
+    2:     @_binop('fmul')
+    2:     def fmul(self, lhs, rhs, name=''):
+               """
+               Floating-point multiplication:
+                   name = lhs * rhs
+               """
+       
+    2:     @_binop('udiv')
+    2:     def udiv(self, lhs, rhs, name=''):
+               """
+               Unsigned integer division:
+                   name = lhs / rhs
+               """
+       
+    2:     @_binop('sdiv')
+    2:     def sdiv(self, lhs, rhs, name=''):
+               """
+               Signed integer division:
+                   name = lhs / rhs
+               """
+       
+    2:     @_binop('fdiv')
+    2:     def fdiv(self, lhs, rhs, name=''):
+               """
+               Floating-point division:
+                   name = lhs / rhs
+               """
+       
+    2:     @_binop('urem')
+    2:     def urem(self, lhs, rhs, name=''):
+               """
+               Unsigned integer remainder:
+                   name = lhs % rhs
+               """
+       
+    2:     @_binop('srem')
+    2:     def srem(self, lhs, rhs, name=''):
+               """
+               Signed integer remainder:
+                   name = lhs % rhs
+               """
+       
+    2:     @_binop('frem')
+    2:     def frem(self, lhs, rhs, name=''):
+               """
+               Floating-point remainder:
+                   name = lhs % rhs
+               """
+       
+    2:     @_binop('or')
+    2:     def or_(self, lhs, rhs, name=''):
+               """
+               Bitwise integer OR:
+                   name = lhs | rhs
+               """
+       
+    2:     @_binop('and')
+    2:     def and_(self, lhs, rhs, name=''):
+               """
+               Bitwise integer AND:
+                   name = lhs & rhs
+               """
+       
+    2:     @_binop('xor')
+    2:     def xor(self, lhs, rhs, name=''):
+               """
+               Bitwise integer XOR:
+                   name = lhs ^ rhs
+               """
+       
+    2:     @_binop_with_overflow('sadd')
+    2:     def sadd_with_overflow(self, lhs, rhs, name=''):
+               """
+               Signed integer addition with overflow:
+                   name = {result, overflow bit} = lhs + rhs
+               """
+       
+    2:     @_binop_with_overflow('smul')
+    2:     def smul_with_overflow(self, lhs, rhs, name=''):
+               """
+               Signed integer multiplication with overflow:
+                   name = {result, overflow bit} = lhs * rhs
+               """
+       
+    2:     @_binop_with_overflow('ssub')
+    2:     def ssub_with_overflow(self, lhs, rhs, name=''):
+               """
+               Signed integer subtraction with overflow:
+                   name = {result, overflow bit} = lhs - rhs
+               """
+       
+    2:     @_binop_with_overflow('uadd')
+    2:     def uadd_with_overflow(self, lhs, rhs, name=''):
+               """
+               Unsigned integer addition with overflow:
+                   name = {result, overflow bit} = lhs + rhs
+               """
+       
+    2:     @_binop_with_overflow('umul')
+    2:     def umul_with_overflow(self, lhs, rhs, name=''):
+               """
+               Unsigned integer multiplication with overflow:
+                   name = {result, overflow bit} = lhs * rhs
+               """
+       
+    2:     @_binop_with_overflow('usub')
+    2:     def usub_with_overflow(self, lhs, rhs, name=''):
+               """
+               Unsigned integer subtraction with overflow:
+                   name = {result, overflow bit} = lhs - rhs
+               """
+       
+           #
+           # Unary APIs
+           #
+       
+    1:     def not_(self, value, name=''):
+               """
+               Bitwise integer complement:
+                   name = ~value
+               """
+   91:         if isinstance(value.type, types.VectorType):
+                   rhs = values.Constant(value.type, (-1,) * value.type.count)
+               else:
+   91:             rhs = values.Constant(value.type, -1)
+   91:         return self.xor(value, rhs, name=name)
+       
+    1:     def neg(self, value, name=''):
+               """
+               Integer negative:
+                   name = -value
+               """
+    8:         return self.sub(values.Constant(value.type, 0), value, name=name)
+       
+    2:     @_unop('fneg')
+    2:     def fneg(self, arg, name='', flags=()):
+               """
+               Floating-point negative:
+                   name = -arg
+               """
+       
+           #
+           # Comparison APIs
+           #
+       
+    1:     def _icmp(self, prefix, cmpop, lhs, rhs, name):
+  727:         try:
+  727:             op = _CMP_MAP[cmpop]
+               except KeyError:
+                   raise ValueError("invalid comparison %r for icmp" % (cmpop,))
+  727:         if cmpop not in ('==', '!='):
+  417:             op = prefix + op
+  727:         instr = instructions.ICMPInstr(self.block, op, lhs, rhs, name=name)
+  727:         self._insert(instr)
+  727:         return instr
+       
+    1:     def icmp_signed(self, cmpop, lhs, rhs, name=''):
+               """
+               Signed integer comparison:
+                   name = lhs <cmpop> rhs
+       
+               where cmpop can be '==', '!=', '<', '<=', '>', '>='
+               """
+  552:         return self._icmp('s', cmpop, lhs, rhs, name)
+       
+    1:     def icmp_unsigned(self, cmpop, lhs, rhs, name=''):
+               """
+               Unsigned integer (or pointer) comparison:
+                   name = lhs <cmpop> rhs
+       
+               where cmpop can be '==', '!=', '<', '<=', '>', '>='
+               """
+  175:         return self._icmp('u', cmpop, lhs, rhs, name)
+       
+    1:     def fcmp_ordered(self, cmpop, lhs, rhs, name='', flags=()):
+               """
+               Floating-point ordered comparison:
+                   name = lhs <cmpop> rhs
+       
+               where cmpop can be '==', '!=', '<', '<=', '>', '>=', 'ord', 'uno'
+               """
+   22:         if cmpop in _CMP_MAP:
+   22:             op = 'o' + _CMP_MAP[cmpop]
+               else:
+                   op = cmpop
+   44:         instr = instructions.FCMPInstr(
+   22:             self.block, op, lhs, rhs, name=name, flags=flags)
+   22:         self._insert(instr)
+   22:         return instr
+       
+    1:     def fcmp_unordered(self, cmpop, lhs, rhs, name='', flags=()):
+               """
+               Floating-point unordered comparison:
+                   name = lhs <cmpop> rhs
+       
+               where cmpop can be '==', '!=', '<', '<=', '>', '>=', 'ord', 'uno'
+               """
+    6:         if cmpop in _CMP_MAP:
+                   op = 'u' + _CMP_MAP[cmpop]
+               else:
+    6:             op = cmpop
+   12:         instr = instructions.FCMPInstr(
+    6:             self.block, op, lhs, rhs, name=name, flags=flags)
+    6:         self._insert(instr)
+    6:         return instr
+       
+    1:     def select(self, cond, lhs, rhs, name='', flags=()):
+               """
+               Ternary select operator:
+                   name = cond ? lhs : rhs
+               """
+  412:         instr = instructions.SelectInstr(self.block, cond, lhs, rhs, name=name,
+  206:                                          flags=flags)
+  206:         self._insert(instr)
+  206:         return instr
+       
+           #
+           # Cast APIs
+           #
+       
+    2:     @_castop('trunc')
+    2:     def trunc(self, value, typ, name=''):
+               """
+               Truncating integer downcast to a smaller type:
+                   name = (typ) value
+               """
+       
+    2:     @_castop('zext')
+    2:     def zext(self, value, typ, name=''):
+               """
+               Zero-extending integer upcast to a larger type:
+                   name = (typ) value
+               """
+       
+    2:     @_castop('sext')
+    2:     def sext(self, value, typ, name=''):
+               """
+               Sign-extending integer upcast to a larger type:
+                   name = (typ) value
+               """
+       
+    2:     @_castop('fptrunc')
+    2:     def fptrunc(self, value, typ, name=''):
+               """
+               Floating-point downcast to a less precise type:
+                   name = (typ) value
+               """
+       
+    2:     @_castop('fpext')
+    2:     def fpext(self, value, typ, name=''):
+               """
+               Floating-point upcast to a more precise type:
+                   name = (typ) value
+               """
+       
+    2:     @_castop('bitcast')
+    2:     def bitcast(self, value, typ, name=''):
+               """
+               Pointer cast to a different pointer type:
+                   name = (typ) value
+               """
+       
+    2:     @_castop('addrspacecast')
+    2:     def addrspacecast(self, value, typ, name=''):
+               """
+               Pointer cast to a different address space:
+                   name = (typ) value
+               """
+       
+    2:     @_castop('fptoui')
+    2:     def fptoui(self, value, typ, name=''):
+               """
+               Convert floating-point to unsigned integer:
+                   name = (typ) value
+               """
+       
+    2:     @_castop('uitofp')
+    2:     def uitofp(self, value, typ, name=''):
+               """
+               Convert unsigned integer to floating-point:
+                   name = (typ) value
+               """
+       
+    2:     @_castop('fptosi')
+    2:     def fptosi(self, value, typ, name=''):
+               """
+               Convert floating-point to signed integer:
+                   name = (typ) value
+               """
+       
+    2:     @_castop('sitofp')
+    2:     def sitofp(self, value, typ, name=''):
+               """
+               Convert signed integer to floating-point:
+                   name = (typ) value
+               """
+       
+    2:     @_castop('ptrtoint')
+    2:     def ptrtoint(self, value, typ, name=''):
+               """
+               Cast pointer to integer:
+                   name = (typ) value
+               """
+       
+    2:     @_castop('inttoptr')
+    2:     def inttoptr(self, value, typ, name=''):
+               """
+               Cast integer to pointer:
+                   name = (typ) value
+               """
+       
+           #
+           # Memory APIs
+           #
+       
+    1:     def alloca(self, typ, size=None, name=''):
+               """
+               Stack-allocate a slot for *size* elements of the given type.
+               (default one element)
+               """
+  415:         if size is None:
+  407:             pass
+    8:         elif isinstance(size, (values.Value, values.Constant)):
+    8:             assert isinstance(size.type, types.IntType)
+               else:
+                   # If it is not a Value instance,
+                   # assume to be a Python integer.
+                   size = values.Constant(types.IntType(32), size)
+       
+  415:         al = instructions.AllocaInstr(self.block, typ, size, name)
+  415:         self._insert(al)
+  415:         return al
+       
+    1:     def load(self, ptr, name='', align=None):
+               """
+               Load value from pointer, with optional guaranteed alignment:
+                   name = *ptr
+               """
+ 1291:         if not isinstance(ptr.type, types.PointerType):
+                   msg = "cannot load from value of type %s (%r): not a pointer"
+                   raise TypeError(msg % (ptr.type, str(ptr)))
+ 1291:         ld = instructions.LoadInstr(self.block, ptr, name)
+ 1291:         ld.align = align
+ 1291:         self._insert(ld)
+ 1291:         return ld
+       
+    1:     def store(self, value, ptr, align=None):
+               """
+               Store value to pointer, with optional guaranteed alignment:
+                   *ptr = name
+               """
+ 1377:         if not isinstance(ptr.type, types.PointerType):
+                   msg = "cannot store to value of type %s (%r): not a pointer"
+                   raise TypeError(msg % (ptr.type, str(ptr)))
+ 1377:         if ptr.type.pointee != value.type:
+                   raise TypeError("cannot store %s to %s: mismatching types"
+                                   % (value.type, ptr.type))
+ 1377:         st = instructions.StoreInstr(self.block, value, ptr)
+ 1377:         st.align = align
+ 1377:         self._insert(st)
+ 1377:         return st
+       
+    1:     def load_atomic(self, ptr, ordering, align, name=''):
+               """
+               Load value from pointer, with optional guaranteed alignment:
+                   name = *ptr
+               """
+               if not isinstance(ptr.type, types.PointerType):
+                   msg = "cannot load from value of type %s (%r): not a pointer"
+                   raise TypeError(msg % (ptr.type, str(ptr)))
+               ld = instructions.LoadAtomicInstr(
+                   self.block, ptr, ordering, align, name)
+               self._insert(ld)
+               return ld
+       
+    1:     def store_atomic(self, value, ptr, ordering, align):
+               """
+               Store value to pointer, with optional guaranteed alignment:
+                   *ptr = name
+               """
+               if not isinstance(ptr.type, types.PointerType):
+                   msg = "cannot store to value of type %s (%r): not a pointer"
+                   raise TypeError(msg % (ptr.type, str(ptr)))
+               if ptr.type.pointee != value.type:
+                   raise TypeError("cannot store %s to %s: mismatching types"
+                                   % (value.type, ptr.type))
+               st = instructions.StoreAtomicInstr(
+                   self.block, value, ptr, ordering, align)
+               self._insert(st)
+               return st
+       
+           #
+           # Terminators APIs
+           #
+       
+    1:     def switch(self, value, default):
+               """
+               Create a switch-case with a single *default* target.
+               """
+               swt = instructions.SwitchInstr(self.block, 'switch', value, default)
+               self._set_terminator(swt)
+               return swt
+       
+    1:     def branch(self, target):
+               """
+               Unconditional branch to *target*.
+               """
+  436:         br = instructions.Branch(self.block, "br", [target])
+  436:         self._set_terminator(br)
+  436:         return br
+       
+    1:     def cbranch(self, cond, truebr, falsebr):
+               """
+               Conditional branch to *truebr* if *cond* is true, else to *falsebr*.
+               """
+  830:         br = instructions.ConditionalBranch(self.block, "br",
+  415:                                             [cond, truebr, falsebr])
+  415:         self._set_terminator(br)
+  415:         return br
+       
+    1:     def branch_indirect(self, addr):
+               """
+               Indirect branch to target *addr*.
+               """
+               br = instructions.IndirectBranch(self.block, "indirectbr", addr)
+               self._set_terminator(br)
+               return br
+       
+    1:     def ret_void(self):
+               """
+               Return from function without a value.
+               """
+    8:         return self._set_terminator(
+    4:             instructions.Ret(self.block, "ret void"))
+       
+    1:     def ret(self, value):
+               """
+               Return from function with the given *value*.
+               """
+  298:         return self._set_terminator(
+  149:             instructions.Ret(self.block, "ret", value))
+       
+    1:     def resume(self, landingpad):
+               """
+               Resume an in-flight exception.
+               """
+               br = instructions.Branch(self.block, "resume", [landingpad])
+               self._set_terminator(br)
+               return br
+       
+           # Call APIs
+       
+    2:     def call(self, fn, args, name='', cconv=None, tail=False, fastmath=(),
+    1:              attrs=(), arg_attrs=None):
+               """
+               Call function *fn* with *args*:
+                   name = fn(args...)
+               """
+  792:         inst = instructions.CallInstr(self.block, fn, args, name=name,
+  396:                                       cconv=cconv, tail=tail, fastmath=fastmath,
+  396:                                       attrs=attrs, arg_attrs=arg_attrs)
+  396:         self._insert(inst)
+  396:         return inst
+       
+    1:     def asm(self, ftype, asm, constraint, args, side_effect, name=''):
+               """
+               Inline assembler.
+               """
+               asm = instructions.InlineAsm(ftype, asm, constraint, side_effect)
+               return self.call(asm, args, name)
+       
+    1:     def load_reg(self, reg_type, reg_name, name=''):
+               """
+               Load a register value into an LLVM value.
+                 Example: v = load_reg(IntType(32), "eax")
+               """
+               ftype = types.FunctionType(reg_type, [])
+               return self.asm(ftype, "", "={%s}" % reg_name, [], False, name)
+       
+    1:     def store_reg(self, value, reg_type, reg_name, name=''):
+               """
+               Store an LLVM value inside a register
+               Example:
+                 store_reg(Constant(IntType(32), 0xAAAAAAAA), IntType(32), "eax")
+               """
+               ftype = types.FunctionType(types.VoidType(), [reg_type])
+               return self.asm(ftype, "", "{%s}" % reg_name, [value], True, name)
+       
+    1:     def invoke(self, fn, args, normal_to, unwind_to,
+    1:                name='', cconv=None, fastmath=(), attrs=(), arg_attrs=None):
+               inst = instructions.InvokeInstr(self.block, fn, args, normal_to,
+                                               unwind_to, name=name, cconv=cconv,
+                                               fastmath=fastmath, attrs=attrs,
+                                               arg_attrs=arg_attrs)
+               self._set_terminator(inst)
+               return inst
+       
+           # GEP APIs
+       
+    1:     def gep(self, ptr, indices, inbounds=False, name=''):
+               """
+               Compute effective address (getelementptr):
+                   name = getelementptr ptr, <indices...>
+               """
+ 1576:         instr = instructions.GEPInstr(self.block, ptr, indices,
+  788:                                       inbounds=inbounds, name=name)
+  788:         self._insert(instr)
+  788:         return instr
+       
+           # Vector Operations APIs
+       
+    1:     def extract_element(self, vector, idx, name=''):
+               """
+               Returns the value at position idx.
+               """
+               instr = instructions.ExtractElement(self.block, vector, idx, name=name)
+               self._insert(instr)
+               return instr
+       
+    1:     def insert_element(self, vector, value, idx, name=''):
+               """
+               Returns vector with vector[idx] replaced by value.
+               The result is undefined if the idx is larger or equal the vector length.
+               """
+               instr = instructions.InsertElement(self.block, vector, value, idx,
+                                                  name=name)
+               self._insert(instr)
+               return instr
+       
+    1:     def shuffle_vector(self, vector1, vector2, mask, name=''):
+               """
+               Constructs a permutation of elements from *vector1* and *vector2*.
+               Returns a new vector in the same length of *mask*.
+       
+               * *vector1* and *vector2* must have the same element type.
+               * *mask* must be a constant vector of integer types.
+               """
+               instr = instructions.ShuffleVector(self.block, vector1, vector2, mask,
+                                                  name=name)
+               self._insert(instr)
+               return instr
+       
+           # Aggregate APIs
+       
+    1:     def extract_value(self, agg, idx, name=''):
+               """
+               Extract member number *idx* from aggregate.
+               """
+ 2210:         if not isinstance(idx, (tuple, list)):
+  753:             idx = [idx]
+ 2210:         instr = instructions.ExtractValue(self.block, agg, idx, name=name)
+ 2210:         self._insert(instr)
+ 2210:         return instr
+       
+    1:     def insert_value(self, agg, value, idx, name=''):
+               """
+               Insert *value* into member number *idx* from aggregate.
+               """
+  628:         if not isinstance(idx, (tuple, list)):
+  204:             idx = [idx]
+  628:         instr = instructions.InsertValue(self.block, agg, value, idx, name=name)
+  628:         self._insert(instr)
+  628:         return instr
+       
+           # PHI APIs
+       
+    1:     def phi(self, typ, name='', flags=()):
+   32:         inst = instructions.PhiInstr(self.block, typ, name=name, flags=flags)
+   32:         self._insert(inst)
+   32:         return inst
+       
+           # Special API
+       
+    1:     def unreachable(self):
+               inst = instructions.Unreachable(self.block)
+               self._set_terminator(inst)
+               return inst
+       
+    1:     def atomic_rmw(self, op, ptr, val, ordering, name=''):
+    4:         inst = instructions.AtomicRMW(
+    2:             self.block, op, ptr, val, ordering, name=name)
+    2:         self._insert(inst)
+    2:         return inst
+       
+    1:     def cmpxchg(self, ptr, cmp, val, ordering, failordering=None, name=''):
+               """
+               Atomic compared-and-set:
+                   atomic {
+                       old = *ptr
+                       success = (old == cmp)
+                       if (success)
+                           *ptr = val
+                       }
+                   name = { old, success }
+       
+               If failordering is `None`, the value of `ordering` is used.
+               """
+    1:         failordering = ordering if failordering is None else failordering
+    2:         inst = instructions.CmpXchg(self.block, ptr, cmp, val, ordering,
+    1:                                     failordering, name=name)
+    1:         self._insert(inst)
+    1:         return inst
+       
+    1:     def landingpad(self, typ, name='', cleanup=False):
+               inst = instructions.LandingPadInstr(self.block, typ, name, cleanup)
+               self._insert(inst)
+               return inst
+       
+    1:     def assume(self, cond):
+               """
+               Optimizer hint: assume *cond* is always true.
+               """
+               fn = self.module.declare_intrinsic("llvm.assume")
+               return self.call(fn, [cond])
+       
+    1:     def fence(self, ordering, targetscope=None, name=''):
+               """
+               Add a memory barrier, preventing certain reorderings of load and/or
+               store accesses with
+               respect to other processors and devices.
+               """
+    2:         inst = instructions.Fence(self.block, ordering, targetscope, name=name)
+    2:         self._insert(inst)
+    2:         return inst
+       
+    1:     def comment(self, text):
+               """
+               Puts a single-line comment into the generated IR. This will be ignored
+               by LLVM, but can be useful for debugging the output of a compiler. Adds
+               a comment to the source file.
+       
+               * *text* is a string that does not contain new line characters.
+               """
+               inst = instructions.Comment(self.block, text)
+               self._insert(inst)
+               return inst
+       
+    2:     @_uniop_intrinsic_int("llvm.bswap")
+    2:     def bswap(self, cond):
+               """
+               Used to byte swap integer values with an even number of bytes (positive
+               multiple of 16 bits)
+               """
+       
+    2:     @_uniop_intrinsic_int("llvm.bitreverse")
+    2:     def bitreverse(self, cond):
+               """
+               Reverse the bitpattern of an integer value; for example 0b10110110
+               becomes 0b01101101.
+               """
+       
+    2:     @_uniop_intrinsic_int("llvm.ctpop")
+    2:     def ctpop(self, cond):
+               """
+               Counts the number of bits set in a value.
+               """
+       
+    2:     @_uniop_intrinsic_with_flag("llvm.ctlz")
+    2:     def ctlz(self, cond, flag):
+               """
+               Counts leading zero bits in *value*. Boolean *flag* indicates whether
+               the result is defined for ``0``.
+               """
+       
+    2:     @_uniop_intrinsic_with_flag("llvm.cttz")
+    2:     def cttz(self, cond, flag):
+               """
+               Counts trailing zero bits in *value*. Boolean *flag* indicates whether
+               the result is defined for ``0``.
+               """
+       
+    2:     @_triop_intrinsic("llvm.fma")
+    2:     def fma(self, a, b, c):
+               """
+               Perform the fused multiply-add operation.
+               """
+       
+    1:     def convert_from_fp16(self, a, to=None, name=''):
+               """
+               Convert from an i16 to the given FP type
+               """
+               if not to:
+                   raise TypeError("expected a float return type")
+               if not isinstance(to, (types.FloatType, types.DoubleType)):
+                   raise TypeError("expected a float type, got %s" % to)
+               if not (isinstance(a.type, types.IntType) and a.type.width == 16):
+                   raise TypeError("expected an i16 type, got %s" % a.type)
+       
+               opname = 'llvm.convert.from.fp16'
+               fn = self.module.declare_intrinsic(opname, [to])
+               return self.call(fn, [a], name)
+       
+    2:     @_uniop_intrinsic_float("llvm.convert.to.fp16")
+    2:     def convert_to_fp16(self, a):
+               """
+               Convert the given FP number to an i16
+               """

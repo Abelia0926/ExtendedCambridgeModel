@@ -1,0 +1,9 @@
+    1: from pymgipsim.Utilities.Scenario import demographic_info
+       
+    2: class Controller:
+    1:     name = "OpenLoop"
+    1:     def __init__(self):
+    3:         pass
+       
+    1:     def run(self, measurements, inputs, states, sample):
+ 4317:         return

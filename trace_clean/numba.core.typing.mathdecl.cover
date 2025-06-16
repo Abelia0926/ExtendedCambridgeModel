@@ -1,0 +1,141 @@
+    1: import math
+    1: from numba.core import types, utils
+    1: from numba.core.typing.templates import (AttributeTemplate, ConcreteTemplate,
+                                                signature, Registry)
+       
+    1: registry = Registry()
+    1: infer_global = registry.register_global
+       
+       
+    3: @infer_global(math.exp)
+    2: @infer_global(math.expm1)
+    2: @infer_global(math.fabs)
+    2: @infer_global(math.sqrt)
+    2: @infer_global(math.log)
+    2: @infer_global(math.log1p)
+    2: @infer_global(math.log10)
+    2: @infer_global(math.sin)
+    2: @infer_global(math.cos)
+    2: @infer_global(math.tan)
+    2: @infer_global(math.sinh)
+    2: @infer_global(math.cosh)
+    2: @infer_global(math.tanh)
+    2: @infer_global(math.asin)
+    2: @infer_global(math.acos)
+    2: @infer_global(math.atan)
+    2: @infer_global(math.asinh)
+    2: @infer_global(math.acosh)
+    2: @infer_global(math.atanh)
+    2: @infer_global(math.degrees)
+    2: @infer_global(math.radians)
+    2: @infer_global(math.erf)
+    2: @infer_global(math.erfc)
+    2: @infer_global(math.gamma)
+    2: @infer_global(math.lgamma)
+    2: class Math_unary(ConcreteTemplate):
+    1:     cases = [
+    1:         signature(types.float64, types.int64),
+    1:         signature(types.float64, types.uint64),
+    1:         signature(types.float32, types.float32),
+    1:         signature(types.float64, types.float64),
+           ]
+       
+       
+    3: @infer_global(math.atan2)
+    2: class Math_atan2(ConcreteTemplate):
+    1:     cases = [
+    1:         signature(types.float64, types.int64, types.int64),
+    1:         signature(types.float64, types.uint64, types.uint64),
+    1:         signature(types.float32, types.float32, types.float32),
+    1:         signature(types.float64, types.float64, types.float64),
+           ]
+       
+       
+    3: @infer_global(math.trunc)
+    2: class Math_converter(ConcreteTemplate):
+    1:     cases = [
+    1:         signature(types.intp, types.intp),
+    1:         signature(types.int64, types.int64),
+    1:         signature(types.uint64, types.uint64),
+    1:         signature(types.int64, types.float32),
+    1:         signature(types.int64, types.float64),
+           ]
+       
+       
+    3: @infer_global(math.floor)
+    2: @infer_global(math.ceil)
+    2: class Math_floor_ceil(Math_converter):
+    1:     pass
+       
+       
+    3: @infer_global(math.copysign)
+    2: class Math_copysign(ConcreteTemplate):
+    1:     cases = [
+    1:         signature(types.float32, types.float32, types.float32),
+    1:         signature(types.float64, types.float64, types.float64),
+           ]
+       
+       
+    3: @infer_global(math.hypot)
+    2: class Math_hypot(ConcreteTemplate):
+    1:     cases = [
+    1:         signature(types.float64, types.int64, types.int64),
+    1:         signature(types.float64, types.uint64, types.uint64),
+    1:         signature(types.float32, types.float32, types.float32),
+    1:         signature(types.float64, types.float64, types.float64),
+           ]
+       
+       
+    3: @infer_global(math.isinf)
+    2: @infer_global(math.isnan)
+    2: class Math_predicate(ConcreteTemplate):
+    1:     cases = [
+    1:         signature(types.boolean, types.int64),
+    1:         signature(types.boolean, types.uint64),
+    1:         signature(types.boolean, types.float32),
+    1:         signature(types.boolean, types.float64),
+           ]
+       
+       
+    3: @infer_global(math.isfinite)
+    2: class Math_isfinite(Math_predicate):
+    1:     pass
+       
+       
+    3: @infer_global(math.pow)
+    2: class Math_pow(ConcreteTemplate):
+    1:     cases = [
+    1:         signature(types.float64, types.float64, types.int64),
+    1:         signature(types.float64, types.float64, types.uint64),
+    1:         signature(types.float32, types.float32, types.float32),
+    1:         signature(types.float64, types.float64, types.float64),
+           ]
+       
+       
+    3: @infer_global(math.gcd)
+    2: class Math_gcd(ConcreteTemplate):
+    1:     cases = [
+    1:         signature(types.int64, types.int64, types.int64),
+    1:         signature(types.int32, types.int32, types.int32),
+    1:         signature(types.int16, types.int16, types.int16),
+    1:         signature(types.int8, types.int8, types.int8),
+    1:         signature(types.uint64, types.uint64, types.uint64),
+    1:         signature(types.uint32, types.uint32, types.uint32),
+    1:         signature(types.uint16, types.uint16, types.uint16),
+    1:         signature(types.uint8, types.uint8, types.uint8),
+           ]
+       
+       
+    3: @infer_global(math.frexp)
+    2: class Math_frexp(ConcreteTemplate):
+    1:     cases = [
+    1:         signature(types.Tuple((types.float64, types.intc)), types.float64),
+    1:         signature(types.Tuple((types.float32, types.intc)), types.float32),
+           ]
+       
+    3: @infer_global(math.ldexp)
+    2: class Math_ldexp(ConcreteTemplate):
+    1:     cases = [
+    1:         signature(types.float64, types.float64, types.intc),
+    1:         signature(types.float32, types.float32, types.intc),
+           ]

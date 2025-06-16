@@ -1,0 +1,469 @@
+    1: """
+       Utilities to simplify the boilerplate for native lowering.
+       """
+       
+       
+    1: import collections
+    1: import contextlib
+    1: import inspect
+    1: import functools
+    1: from enum import Enum
+       
+    1: from numba.core import typing, types, utils, cgutils
+    1: from numba.core.typing.templates import BaseRegistryLoader
+       
+       
+    2: class Registry(object):
+    1:     """
+           A registry of function and attribute implementations.
+           """
+    1:     def __init__(self, name='unspecified'):
+    8:         self.name = name
+    8:         self.functions = []
+    8:         self.getattrs = []
+    8:         self.setattrs = []
+    8:         self.casts = []
+    8:         self.constants = []
+       
+    1:     def lower(self, func, *argtys):
+               """
+               Decorate an implementation of *func* for the given argument types.
+               *func* may be an actual global function object, or any
+               pseudo-function supported by Numba, such as "getitem".
+       
+               The decorated implementation has the signature
+               (context, builder, sig, args).
+               """
+ 1042:         def decorate(impl):
+ 1042:             self.functions.append((impl, func, argtys))
+ 1042:             return impl
+ 1042:         return decorate
+       
+    1:     def _decorate_attr(self, impl, ty, attr, impl_list, decorator):
+   69:         real_impl = decorator(impl, ty, attr)
+   69:         impl_list.append((real_impl, attr, real_impl.signature))
+   69:         return impl
+       
+    1:     def lower_getattr(self, ty, attr):
+               """
+               Decorate an implementation of __getattr__ for type *ty* and
+               the attribute *attr*.
+       
+               The decorated implementation will have the signature
+               (context, builder, typ, val).
+               """
+   66:         def decorate(impl):
+  132:             return self._decorate_attr(impl, ty, attr, self.getattrs,
+   66:                                        _decorate_getattr)
+   66:         return decorate
+       
+    1:     def lower_getattr_generic(self, ty):
+               """
+               Decorate the fallback implementation of __getattr__ for type *ty*.
+       
+               The decorated implementation will have the signature
+               (context, builder, typ, val, attr).  The implementation is
+               called for attributes which haven't been explicitly registered
+               with lower_getattr().
+               """
+    7:         return self.lower_getattr(ty, None)
+       
+    1:     def lower_setattr(self, ty, attr):
+               """
+               Decorate an implementation of __setattr__ for type *ty* and
+               the attribute *attr*.
+       
+               The decorated implementation will have the signature
+               (context, builder, sig, args).
+               """
+    3:         def decorate(impl):
+    6:             return self._decorate_attr(impl, ty, attr, self.setattrs,
+    3:                                        _decorate_setattr)
+    3:         return decorate
+       
+    1:     def lower_setattr_generic(self, ty):
+               """
+               Decorate the fallback implementation of __setattr__ for type *ty*.
+       
+               The decorated implementation will have the signature
+               (context, builder, sig, args, attr).  The implementation is
+               called for attributes which haven't been explicitly registered
+               with lower_setattr().
+               """
+    3:         return self.lower_setattr(ty, None)
+       
+    1:     def lower_cast(self, fromty, toty):
+               """
+               Decorate the implementation of implicit conversion between
+               *fromty* and *toty*.
+       
+               The decorated implementation will have the signature
+               (context, builder, fromty, toty, val).
+               """
+   54:         def decorate(impl):
+   54:             self.casts.append((impl, (fromty, toty)))
+   54:             return impl
+   54:         return decorate
+       
+    1:     def lower_constant(self, ty):
+               """
+               Decorate the implementation for creating a constant of type *ty*.
+       
+               The decorated implementation will have the signature
+               (context, builder, ty, pyval).
+               """
+   21:         def decorate(impl):
+   21:             self.constants.append((impl, (ty,)))
+   21:             return impl
+   21:         return decorate
+       
+    1:     def __repr__(self):
+               return f"Lowering Registry<{self.name}>"
+       
+       
+    2: class RegistryLoader(BaseRegistryLoader):
+    1:     """
+           An incremental loader for a target registry.
+           """
+    1:     registry_items = ('functions', 'getattrs', 'setattrs', 'casts', 'constants')
+       
+       
+       # Global registry for implementations of builtin operations
+       # (functions, attributes, type casts)
+    1: builtin_registry = Registry('builtin_registry')
+       
+    1: lower_builtin = builtin_registry.lower
+    1: lower_getattr = builtin_registry.lower_getattr
+    1: lower_getattr_generic = builtin_registry.lower_getattr_generic
+    1: lower_setattr = builtin_registry.lower_setattr
+    1: lower_setattr_generic = builtin_registry.lower_setattr_generic
+    1: lower_cast = builtin_registry.lower_cast
+    1: lower_constant = builtin_registry.lower_constant
+       
+       
+    1: def _decorate_getattr(impl, ty, attr):
+   66:     real_impl = impl
+       
+   66:     if attr is not None:
+   59:         def res(context, builder, typ, value, attr):
+   13:             return real_impl(context, builder, typ, value)
+           else:
+    7:         def res(context, builder, typ, value, attr):
+    2:             return real_impl(context, builder, typ, value, attr)
+       
+   66:     res.signature = (ty,)
+   66:     res.attr = attr
+   66:     return res
+       
+    1: def _decorate_setattr(impl, ty, attr):
+    3:     real_impl = impl
+       
+    3:     if attr is not None:
+               def res(context, builder, sig, args, attr):
+                   return real_impl(context, builder, sig, args)
+           else:
+    3:         def res(context, builder, sig, args, attr):
+                   return real_impl(context, builder, sig, args, attr)
+       
+    3:     res.signature = (ty, types.Any)
+    3:     res.attr = attr
+    3:     return res
+       
+       
+    1: def fix_returning_optional(context, builder, sig, status, retval):
+           # Reconstruct optional return type
+   39:     if isinstance(sig.return_type, types.Optional):
+               value_type = sig.return_type.type
+               optional_none = context.make_optional_none(builder, value_type)
+               retvalptr = cgutils.alloca_once_value(builder, optional_none)
+               with builder.if_then(builder.not_(status.is_none)):
+                   optional_value = context.make_optional_value(
+                       builder, value_type, retval,
+                       )
+                   builder.store(optional_value, retvalptr)
+               retval = builder.load(retvalptr)
+   39:     return retval
+       
+    1: def user_function(fndesc, libs):
+           """
+           A wrapper inserting code calling Numba-compiled *fndesc*.
+           """
+       
+   20:     def imp(context, builder, sig, args):
+   22:         func = context.declare_function(builder.module, fndesc)
+               # env=None assumes this is a nopython function
+   44:         status, retval = context.call_conv.call_function(
+   22:             builder, func, fndesc.restype, fndesc.argtypes, args)
+   44:         with cgutils.if_unlikely(builder, status.is_error):
+   22:             context.call_conv.return_status_propagate(builder, status)
+   22:         assert sig.return_type == fndesc.restype
+               # Reconstruct optional return type
+   22:         retval = fix_returning_optional(context, builder, sig, status, retval)
+               # If the data representations don't match up
+   22:         if retval.type != context.get_value_type(sig.return_type):
+                   msg = "function returned {0} but expect {1}"
+                   raise TypeError(msg.format(retval.type, sig.return_type))
+       
+   22:         return impl_ret_new_ref(context, builder, fndesc.restype, retval)
+       
+   20:     imp.signature = fndesc.argtypes
+   20:     imp.libs = tuple(libs)
+   20:     return imp
+       
+       
+    1: def user_generator(gendesc, libs):
+           """
+           A wrapper inserting code calling Numba-compiled *gendesc*.
+           """
+       
+           def imp(context, builder, sig, args):
+               func = context.declare_function(builder.module, gendesc)
+               # env=None assumes this is a nopython function
+               status, retval = context.call_conv.call_function(
+                   builder, func, gendesc.restype, gendesc.argtypes, args)
+               # Return raw status for caller to process StopIteration
+               return status, retval
+       
+           imp.libs = tuple(libs)
+           return imp
+       
+       
+    1: def iterator_impl(iterable_type, iterator_type):
+           """
+           Decorator a given class as implementing *iterator_type*
+           (by providing an `iternext()` method).
+           """
+       
+    3:     def wrapper(cls):
+               # These are unbound methods
+    3:         iternext = cls.iternext
+       
+    6:         @iternext_impl(RefType.BORROWED)
+    6:         def iternext_wrapper(context, builder, sig, args, result):
+    5:             (value,) = args
+    5:             iterobj = cls(context, builder, value)
+    5:             return iternext(iterobj, context, builder, result)
+       
+    3:         lower_builtin('iternext', iterator_type)(iternext_wrapper)
+    3:         return cls
+       
+    3:     return wrapper
+       
+       
+    2: class _IternextResult(object):
+    1:     """
+           A result wrapper for iteration, passed by iternext_impl() into the
+           wrapped function.
+           """
+    1:     __slots__ = ('_context', '_builder', '_pairobj')
+       
+    1:     def __init__(self, context, builder, pairobj):
+    5:         self._context = context
+    5:         self._builder = builder
+    5:         self._pairobj = pairobj
+       
+    1:     def set_exhausted(self):
+               """
+               Mark the iterator as exhausted.
+               """
+               self._pairobj.second = self._context.get_constant(types.boolean, False)
+       
+    1:     def set_valid(self, is_valid=True):
+               """
+               Mark the iterator as valid according to *is_valid* (which must
+               be either a Python boolean or a LLVM inst).
+               """
+    5:         if is_valid in (False, True):
+                   is_valid = self._context.get_constant(types.boolean, is_valid)
+    5:         self._pairobj.second = is_valid
+       
+    1:     def yield_(self, value):
+               """
+               Mark the iterator as yielding the given *value* (a LLVM inst).
+               """
+    5:         self._pairobj.first = value
+       
+    1:     def is_valid(self):
+               """
+               Return whether the iterator is marked valid.
+               """
+               return self._context.get_argument_value(self._builder,
+                                                       types.boolean,
+                                                       self._pairobj.second)
+       
+    1:     def yielded_value(self):
+               """
+               Return the iterator's yielded value, if any.
+               """
+               return self._pairobj.first
+       
+    2: class RefType(Enum):
+    1:     """
+           Enumerate the reference type
+           """
+    1:     """
+           A new reference
+           """
+    1:     NEW = 1
+    1:     """
+           A borrowed reference
+           """
+    1:     BORROWED = 2
+    1:     """
+           An untracked reference
+           """
+    1:     UNTRACKED = 3
+       
+    1: def iternext_impl(ref_type=None):
+           """
+           Wrap the given iternext() implementation so that it gets passed
+           an _IternextResult() object easing the returning of the iternext()
+           result pair.
+       
+           ref_type: a numba.targets.imputils.RefType value, the reference type used is
+           that specified through the RefType enum.
+       
+           The wrapped function will be called with the following signature:
+               (context, builder, sig, args, iternext_result)
+           """
+   85:     if ref_type not in [x for x in RefType]:
+               raise ValueError("ref_type must be an enum member of imputils.RefType")
+       
+   17:     def outer(func):
+   17:         def wrapper(context, builder, sig, args):
+    5:             pair_type = sig.return_type
+    5:             pairobj = context.make_helper(builder, pair_type)
+   10:             func(context, builder, sig, args,
+    5:                 _IternextResult(context, builder, pairobj))
+    5:             if ref_type == RefType.NEW:
+                       impl_ret = impl_ret_new_ref
+    5:             elif ref_type == RefType.BORROWED:
+    5:                 impl_ret = impl_ret_borrowed
+                   elif ref_type == RefType.UNTRACKED:
+                       impl_ret = impl_ret_untracked
+                   else:
+                       raise ValueError("Unknown ref_type encountered")
+   10:             return impl_ret(context, builder,
+    5:                                     pair_type, pairobj._getvalue())
+   17:         return wrapper
+   17:     return outer
+       
+       
+    1: def call_getiter(context, builder, iterable_type, val):
+           """
+           Call the `getiter()` implementation for the given *iterable_type*
+           of value *val*, and return the corresponding LLVM inst.
+           """
+           getiter_sig = typing.signature(iterable_type.iterator_type, iterable_type)
+           getiter_impl = context.get_function('getiter', getiter_sig)
+           return getiter_impl(builder, (val,))
+       
+       
+    1: def call_iternext(context, builder, iterator_type, val):
+           """
+           Call the `iternext()` implementation for the given *iterator_type*
+           of value *val*, and return a convenience _IternextResult() object
+           reflecting the results.
+           """
+           itemty = iterator_type.yield_type
+           pair_type = types.Pair(itemty, types.boolean)
+           iternext_sig = typing.signature(pair_type, iterator_type)
+           iternext_impl = context.get_function('iternext', iternext_sig)
+           val = iternext_impl(builder, (val,))
+           pairobj = context.make_helper(builder, pair_type, val)
+           return _IternextResult(context, builder, pairobj)
+       
+       
+    1: def call_len(context, builder, ty, val):
+           """
+           Call len() on the given value.  Return None if len() isn't defined on
+           this type.
+           """
+           try:
+               len_impl = context.get_function(len, typing.signature(types.intp, ty,))
+           except NotImplementedError:
+               return None
+           else:
+               return len_impl(builder, (val,))
+       
+       
+    2: _ForIterLoop = collections.namedtuple('_ForIterLoop',
+    1:                                       ('value', 'do_break'))
+       
+       
+    2: @contextlib.contextmanager
+    2: def for_iter(context, builder, iterable_type, val):
+           """
+           Simulate a for loop on the given iterable.  Yields a namedtuple with
+           the given members:
+           - `value` is the value being yielded
+           - `do_break` is a callable to early out of the loop
+           """
+           iterator_type = iterable_type.iterator_type
+           iterval = call_getiter(context, builder, iterable_type, val)
+       
+           bb_body = builder.append_basic_block('for_iter.body')
+           bb_end = builder.append_basic_block('for_iter.end')
+       
+           def do_break():
+               builder.branch(bb_end)
+       
+           builder.branch(bb_body)
+       
+           with builder.goto_block(bb_body):
+               res = call_iternext(context, builder, iterator_type, iterval)
+               with builder.if_then(builder.not_(res.is_valid()), likely=False):
+                   builder.branch(bb_end)
+               yield _ForIterLoop(res.yielded_value(), do_break)
+               builder.branch(bb_body)
+       
+           builder.position_at_end(bb_end)
+           if context.enable_nrt:
+               context.nrt.decref(builder, iterator_type, iterval)
+       
+       
+    1: def impl_ret_new_ref(ctx, builder, retty, ret):
+           """
+           The implementation returns a new reference.
+           """
+   37:     return ret
+       
+       
+    1: def impl_ret_borrowed(ctx, builder, retty, ret):
+           """
+           The implementation returns a borrowed reference.
+           This function automatically incref so that the implementation is
+           returning a new reference.
+           """
+   32:     if ctx.enable_nrt:
+   32:         ctx.nrt.incref(builder, retty, ret)
+   32:     return ret
+       
+       
+    1: def impl_ret_untracked(ctx, builder, retty, ret):
+           """
+           The return type is not a NRT object.
+           """
+   98:     return ret
+       
+       
+    2: @contextlib.contextmanager
+    2: def force_error_model(context, model_name='numpy'):
+           """
+           Temporarily change the context's error model.
+           """
+   11:     from numba.core import callconv
+       
+   11:     old_error_model = context.error_model
+   11:     context.error_model = callconv.create_error_model(model_name, context)
+   11:     try:
+   11:         yield
+           finally:
+   11:         context.error_model = old_error_model
+       
+       
+    1: def numba_typeref_ctor(*args, **kwargs):
+           """A stub for use internally by Numba when a call is emitted
+           on a TypeRef.
+           """
+           raise NotImplementedError("This function should not be executed.")

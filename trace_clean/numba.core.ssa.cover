@@ -1,0 +1,487 @@
+    1: """
+       Implement Dominance-Fronter-based SSA by Choi et al described in Inria SSA book
+       
+       References:
+       
+       - Static Single Assignment Book by Inria
+         http://ssabook.gforge.inria.fr/latest/book.pdf
+       - Choi et al. Incremental computation of static single assignment form.
+       """
+    1: import logging
+    1: import operator
+    1: import warnings
+    1: from functools import reduce
+    1: from copy import copy
+    1: from pprint import pformat
+    1: from collections import defaultdict
+       
+    1: from numba import config
+    1: from numba.core import ir, ir_utils, errors
+    1: from numba.core.analysis import compute_cfg_from_blocks
+       
+       
+    1: _logger = logging.getLogger(__name__)
+       
+       
+    1: def reconstruct_ssa(func_ir):
+           """Apply SSA reconstruction algorithm on the given IR.
+       
+           Produces minimal SSA using Choi et al algorithm.
+           """
+   24:     func_ir.blocks = _run_ssa(func_ir.blocks)
+       
+   24:     return func_ir
+       
+       
+    2: class _CacheListVars:
+    1:     def __init__(self):
+   24:         self._saved = {}
+       
+    1:     def get(self, inst):
+  919:         got = self._saved.get(inst)
+  919:         if got is None:
+  313:             self._saved[inst] = got = inst.list_vars()
+  919:         return got
+       
+       
+    1: def _run_ssa(blocks):
+           """Run SSA reconstruction on IR blocks of a function.
+           """
+   24:     if not blocks:
+               # Empty blocks?
+               return {}
+           # Run CFG on the blocks
+   24:     cfg = compute_cfg_from_blocks(blocks)
+   24:     df_plus = _iterated_domfronts(cfg)
+           # Find SSA violators
+   24:     violators = _find_defs_violators(blocks, cfg)
+           # Make cache for .list_vars()
+   24:     cache_list_vars = _CacheListVars()
+       
+           # Process one SSA-violating variable at a time
+   40:     for varname in violators:
+   32:         _logger.debug(
+   16:             "Fix SSA violator on var %s", varname,
+               )
+               # Fix up the LHS
+               # Put fresh variables for all assignments to the variable
+   16:         blocks, defmap = _fresh_vars(blocks, varname)
+   16:         _logger.debug("Replaced assignments: %s", pformat(defmap))
+               # Fix up the RHS
+               # Re-associate the variable uses with the reaching definition
+   32:         blocks = _fix_ssa_vars(blocks, varname, defmap, cfg, df_plus,
+   16:                                cache_list_vars)
+       
+           # Post-condition checks.
+           # CFG invariant
+   24:     cfg_post = compute_cfg_from_blocks(blocks)
+   24:     if cfg_post != cfg:
+               raise errors.CompilerError("CFG mutated in SSA pass")
+   24:     return blocks
+       
+       
+    1: def _fix_ssa_vars(blocks, varname, defmap, cfg, df_plus, cache_list_vars):
+           """Rewrite all uses to ``varname`` given the definition map
+           """
+   16:     states = _make_states(blocks)
+   16:     states['varname'] = varname
+   16:     states['defmap'] = defmap
+   16:     states['phimap'] = phimap = defaultdict(list)
+   16:     states['cfg'] = cfg
+   16:     states['phi_locations'] = _compute_phi_locations(df_plus, defmap)
+   16:     newblocks = _run_block_rewrite(blocks, states, _FixSSAVars(cache_list_vars))
+           # insert phi nodes
+   64:     for label, philist in phimap.items():
+   48:         curblk = newblocks[label]
+               # Prepend PHI nodes to the block
+   48:         curblk.body = philist + curblk.body
+   16:     return newblocks
+       
+       
+    1: def _iterated_domfronts(cfg):
+           """Compute the iterated dominance frontiers (DF+ in literatures).
+       
+           Returns a dictionary which maps block label to the set of labels of its
+           iterated dominance frontiers.
+           """
+  143:     domfronts = {k: set(vs) for k, vs in cfg.dominance_frontier().items()}
+   24:     keep_going = True
+   55:     while keep_going:
+   31:         keep_going = False
+  218:         for k, vs in domfronts.items():
+  536:             inner = reduce(operator.or_, [domfronts[v] for v in vs], set())
+  187:             if inner.difference(vs):
+   19:                 vs |= inner
+   19:                 keep_going = True
+   24:     return domfronts
+       
+       
+    1: def _compute_phi_locations(iterated_df, defmap):
+           # See basic algorithm in Ch 4.1 in Inria SSA Book
+           # Compute DF+(defs)
+           # DF of all DFs is the union of all DFs
+   16:     phi_locations = set()
+   50:     for deflabel, defstmts in defmap.items():
+   34:         if defstmts:
+   34:             phi_locations |= iterated_df[deflabel]
+   16:     return phi_locations
+       
+       
+    1: def _fresh_vars(blocks, varname):
+           """Rewrite to put fresh variable names
+           """
+   16:     states = _make_states(blocks)
+   16:     states['varname'] = varname
+   16:     states['defmap'] = defmap = defaultdict(list)
+   16:     newblocks = _run_block_rewrite(blocks, states, _FreshVarHandler())
+   16:     return newblocks, defmap
+       
+       
+    1: def _get_scope(blocks):
+   32:     first, *_ = blocks.values()
+   32:     return first.scope
+       
+       
+    1: def _find_defs_violators(blocks, cfg):
+           """
+           Returns
+           -------
+           res : Set[str]
+               The SSA violators in a dictionary of variable names.
+           """
+   24:     defs = defaultdict(list)
+   24:     uses = defaultdict(set)
+   24:     states = dict(defs=defs, uses=uses)
+   24:     _run_block_analysis(blocks, states, _GatherDefsHandler())
+   24:     _logger.debug("defs %s", pformat(defs))
+           # Gather violators by number of definitions
+  557:     violators = {k for k, vs in defs.items() if len(vs) > 1}
+           # Gather violators by uses not dominated by the one def
+   24:     doms = cfg.dominators()
+  523:     for k, use_blocks in uses.items():
+  499:         if k not in violators:
+ 1029:             for label in use_blocks:
+  546:                 dom = doms[label]
+ 1638:                 def_labels = {label for _assign, label in defs[k] }
+  546:                 if not def_labels.intersection(dom):
+                           violators.add(k)
+                           break
+   24:     _logger.debug("SSA violators %s", pformat(violators))
+   24:     return violators
+       
+       
+    1: def _run_block_analysis(blocks, states, handler):
+  119:     for label, blk in blocks.items():
+   95:         _logger.debug("==== SSA block analysis pass on %s", label)
+   95:         states['label'] = label
+  723:         for _ in _run_ssa_block_pass(states, blk, handler):
+  628:             pass
+       
+       
+    1: def _run_block_rewrite(blocks, states, handler):
+   32:     newblocks = {}
+  462:     for label, blk in blocks.items():
+  430:         _logger.debug("==== SSA block rewrite pass on %s", label)
+  430:         newblk = ir.Block(scope=blk.scope, loc=blk.loc)
+       
+  430:         newbody = []
+  430:         states['label'] = label
+  430:         states['block'] = blk
+ 3282:         for stmt in _run_ssa_block_pass(states, blk, handler):
+ 2852:             assert stmt is not None
+ 2852:             newbody.append(stmt)
+  430:         newblk.body = newbody
+  430:         newblocks[label] = newblk
+   32:     return newblocks
+       
+       
+    1: def _make_states(blocks):
+   64:     return dict(
+   32:         scope=_get_scope(blocks),
+           )
+       
+       
+    1: def _run_ssa_block_pass(states, blk, handler):
+  525:     _logger.debug("Running %s", handler)
+ 4005:     for stmt in blk.body:
+ 3480:         _logger.debug("on stmt: %s", stmt)
+ 3480:         if isinstance(stmt, ir.Assign):
+ 2921:             ret = handler.on_assign(states, stmt)
+               else:
+  559:             ret = handler.on_other(states, stmt)
+ 3480:         if ret is not stmt and ret is not None:
+   67:             _logger.debug("replaced with: %s", ret)
+ 3480:         yield ret
+       
+       
+    2: class _BaseHandler:
+    1:     """A base handler for all the passes used here for the SSA algorithm.
+           """
+    1:     def on_assign(self, states, assign):
+               """
+               Called when the pass sees an ``ir.Assign``.
+       
+               Subclasses should override this for custom behavior
+       
+               Parameters
+               -----------
+               states : dict
+               assign : numba.ir.Assign
+       
+               Returns
+               -------
+               stmt : numba.ir.Assign or None
+                   For rewrite passes, the return value is used as the replacement
+                   for the given statement.
+               """
+       
+    1:     def on_other(self, states, stmt):
+               """
+               Called when the pass sees an ``ir.Stmt`` that's not an assignment.
+       
+               Subclasses should override this for custom behavior
+       
+               Parameters
+               -----------
+               states : dict
+               assign : numba.ir.Stmt
+       
+               Returns
+               -------
+               stmt : numba.ir.Stmt or None
+                   For rewrite passes, the return value is used as the replacement
+                   for the given statement.
+               """
+       
+       
+    2: class _GatherDefsHandler(_BaseHandler):
+    1:     """Find all defs and uses of variable in each block
+       
+           ``states["label"]`` is a int; label of the current block
+           ``states["defs"]`` is a Mapping[str, List[Tuple[ir.Assign, int]]]:
+               - a mapping of the name of the assignee variable to the assignment
+                 IR node and the block label.
+           ``states["uses"]`` is a Mapping[Set[int]]
+           """
+    1:     def on_assign(self, states, assign):
+               # keep track of assignment and the block
+  527:         states["defs"][assign.target.name].append((assign, states["label"]))
+               # keep track of uses
+ 1588:         for var in assign.list_vars():
+ 1061:             k = var.name
+ 1061:             if k != assign.target.name:
+  534:                 states["uses"][k].add(states["label"])
+       
+    1:     def on_other(self, states, stmt):
+               # keep track of uses
+  185:         for var in stmt.list_vars():
+   84:             k = var.name
+   84:             states["uses"][k].add(states["label"])
+       
+       
+    2: class UndefinedVariable:
+    1:     def __init__(self):
+               raise NotImplementedError("Not intended for instantiation")
+       
+    1:     target = ir.UNDEFINED
+       
+       
+    2: class _FreshVarHandler(_BaseHandler):
+    1:     """Replaces assignment target with new fresh variables.
+           """
+    1:     def on_assign(self, states, assign):
+ 1197:         if assign.target.name == states['varname']:
+   34:             scope = states['scope']
+   34:             defmap = states['defmap']
+                   # Allow first assignment to retain the name
+   34:             if len(defmap) == 0:
+   16:                 newtarget = assign.target
+   16:                 _logger.debug("first assign: %s", newtarget)
+   16:                 if newtarget.name not in scope.localvars:
+                           wmsg = f"variable {newtarget.name!r} is not in scope."
+                           warnings.warn(errors.NumbaIRAssumptionWarning(wmsg,
+                                         loc=assign.loc))
+                   else:
+   18:                 newtarget = scope.redefine(assign.target.name, loc=assign.loc)
+   68:             assign = ir.Assign(
+   34:                 target=newtarget,
+   34:                 value=assign.value,
+   34:                 loc=assign.loc
+                   )
+   34:             defmap[states['label']].append(assign)
+ 1197:         return assign
+       
+    1:     def on_other(self, states, stmt):
+  229:         return stmt
+       
+       
+    2: class _FixSSAVars(_BaseHandler):
+    1:     """Replace variable uses in IR nodes to the correct reaching variable
+           and introduce Phi nodes if necessary. This class contains the core of
+           the SSA reconstruction algorithm.
+       
+           See Ch 5 of the Inria SSA book for reference. The method names used here
+           are similar to the names used in the pseudocode in the book.
+           """
+       
+    1:     def __init__(self, cache_list_vars):
+   16:         self._cache_list_vars = cache_list_vars
+       
+    1:     def on_assign(self, states, assign):
+ 1197:         rhs = assign.value
+ 1197:         if isinstance(rhs, ir.Inst):
+ 1380:             newdef = self._fix_var(
+  690:                 states, assign, self._cache_list_vars.get(assign.value),
+                   )
+                   # Has a replacement that is not the current variable
+  690:             if newdef is not None and newdef.target is not ir.UNDEFINED:
+   38:                 if states['varname'] != newdef.target.name:
+   29:                     replmap = {states['varname']: newdef.target}
+   29:                     rhs = copy(rhs)
+       
+   29:                     ir_utils.replace_vars_inner(rhs, replmap)
+   58:                     return ir.Assign(
+   29:                         target=assign.target,
+   29:                         value=rhs,
+   29:                         loc=assign.loc,
+                           )
+  507:         elif isinstance(rhs, ir.Var):
+   70:             newdef = self._fix_var(states, assign, [rhs])
+                   # Has a replacement that is not the current variable
+   70:             if newdef is not None and newdef.target is not ir.UNDEFINED:
+    1:                 if states['varname'] != newdef.target.name:
+    2:                     return ir.Assign(
+    1:                         target=assign.target,
+    1:                         value=newdef.target,
+    1:                         loc=assign.loc,
+                           )
+       
+ 1167:         return assign
+       
+    1:     def on_other(self, states, stmt):
+  458:         newdef = self._fix_var(
+  229:             states, stmt, self._cache_list_vars.get(stmt),
+               )
+  229:         if newdef is not None and newdef.target is not ir.UNDEFINED:
+    3:             if states['varname'] != newdef.target.name:
+    3:                 replmap = {states['varname']: newdef.target}
+    3:                 stmt = copy(stmt)
+    3:                 ir_utils.replace_vars_stmt(stmt, replmap)
+  229:         return stmt
+       
+    1:     def _fix_var(self, states, stmt, used_vars):
+               """Fix all variable uses in ``used_vars``.
+               """
+ 3455:         varnames = [k.name for k in used_vars]
+  989:         phivar = states['varname']
+  989:         if phivar in varnames:
+   42:             return self._find_def(states, stmt)
+       
+    1:     def _find_def(self, states, stmt):
+               """Find definition of ``stmt`` for the statement ``stmt``
+               """
+   42:         _logger.debug("find_def var=%r stmt=%s", states['varname'], stmt)
+   42:         selected_def = None
+   42:         label = states['label']
+   42:         local_defs = states['defmap'][label]
+   42:         local_phis = states['phimap'][label]
+   42:         block = states['block']
+       
+   42:         cur_pos = self._stmt_index(stmt, block)
+   47:         for defstmt in reversed(local_defs):
+                   # Phi nodes have no index
+   19:             def_pos = self._stmt_index(defstmt, block, stop=cur_pos)
+   19:             if def_pos < cur_pos:
+   14:                 selected_def = defstmt
+   14:                 break
+                   # Maybe it's a PHI
+    5:             elif defstmt in local_phis:
+                       selected_def = local_phis[-1]
+                       break
+       
+   42:         if selected_def is None:
+   56:             selected_def = self._find_def_from_top(
+   28:                 states, label, loc=stmt.loc,
+                   )
+   42:         return selected_def
+       
+    1:     def _find_def_from_top(self, states, label, loc):
+               """Find definition reaching block of ``label``.
+       
+               This method would look at all dominance frontiers.
+               Insert phi node if necessary.
+               """
+   69:         _logger.debug("find_def_from_top label %r", label)
+   69:         cfg = states['cfg']
+   69:         defmap = states['defmap']
+   69:         phimap = states['phimap']
+   69:         phi_locations = states['phi_locations']
+       
+   69:         if label in phi_locations:
+   17:             scope = states['scope']
+   17:             loc = states['block'].loc
+                   # fresh variable
+   17:             freshvar = scope.redefine(states['varname'], loc=loc)
+                   # insert phi
+   34:             phinode = ir.Assign(
+   17:                 target=freshvar,
+   17:                 value=ir.Expr.phi(loc=loc),
+   17:                 loc=loc,
+                   )
+   17:             _logger.debug("insert phi node %s at %s", phinode, label)
+   17:             defmap[label].insert(0, phinode)
+   17:             phimap[label].append(phinode)
+                   # Find incoming values for the Phi node
+   51:             for pred, _ in cfg.predecessors(label):
+   68:                 incoming_def = self._find_def_from_bottom(
+   34:                     states, pred, loc=loc,
+                       )
+   34:                 _logger.debug("incoming_def %s", incoming_def)
+   34:                 phinode.value.incoming_values.append(incoming_def.target)
+   34:                 phinode.value.incoming_blocks.append(pred)
+   17:             return phinode
+               else:
+   52:             idom = cfg.immediate_dominators()[label]
+   52:             if idom == label:
+                       # We have searched to the top of the idom tree.
+                       # Since we still cannot find a definition,
+                       # we will warn.
+                       _warn_about_uninitialized_variable(states['varname'], loc)
+                       return UndefinedVariable
+   52:             _logger.debug("idom %s from label %s", idom, label)
+   52:             return self._find_def_from_bottom(states, idom, loc=loc)
+       
+    1:     def _find_def_from_bottom(self, states, label, loc):
+               """Find definition from within the block at ``label``.
+               """
+   86:         _logger.debug("find_def_from_bottom label %r", label)
+   86:         defmap = states['defmap']
+   86:         defs = defmap[label]
+   86:         if defs:
+   45:             lastdef = defs[-1]
+   45:             return lastdef
+               else:
+   41:             return self._find_def_from_top(states, label, loc=loc)
+       
+    1:     def _stmt_index(self, defstmt, block, stop=-1):
+               """Find the positional index of the statement at ``block``.
+       
+               Assumptions:
+               - no two statements can point to the same object.
+               """
+               # Compare using id() as IR node equality is for semantic equivalence
+               # opposed to direct equality (the location and scope are not considered
+               # as part of the equality measure, this is important here).
+  352:         for i in range(len(block.body))[:stop]:
+  347:             if block.body[i] is defstmt:
+   56:                 return i
+    5:         return len(block.body)
+       
+       
+    1: def _warn_about_uninitialized_variable(varname, loc):
+           if config.ALWAYS_WARN_UNINIT_VAR:
+               warnings.warn(
+                   errors.NumbaWarning(
+                       f"Detected uninitialized variable {varname}",
+                       loc=loc),
+               )

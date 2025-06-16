@@ -1,0 +1,330 @@
+    1: import platform
+       
+    1: import llvmlite.binding as ll
+    1: from llvmlite import ir
+       
+    1: from numba import _dynfunc
+    1: from numba.core.callwrapper import PyCallWrapper
+    1: from numba.core.base import BaseContext
+    1: from numba.core import (utils, types, config, cgutils, callconv, codegen,
+                               externals, fastmathpass, intrinsics)
+    1: from numba.core.options import TargetOptions, include_default_options
+    1: from numba.core.runtime import rtsys
+    1: from numba.core.compiler_lock import global_compiler_lock
+    1: import numba.core.entrypoints
+       # Re-export these options, they are used from the cpu module throughout the code
+       # base.
+    1: from numba.core.cpu_options import (ParallelOptions, # noqa F401
+                                           FastMathOptions, InlineOptions) # noqa F401
+    1: from numba.np import ufunc_db
+       
+       # Keep those structures in sync with _dynfunc.c.
+       
+       
+    2: class ClosureBody(cgutils.Structure):
+    1:     _fields = [('env', types.pyobject)]
+       
+       
+    2: class EnvBody(cgutils.Structure):
+    1:     _fields = [
+    1:         ('globals', types.pyobject),
+    1:         ('consts', types.pyobject),
+           ]
+       
+       
+    2: class CPUContext(BaseContext):
+    1:     """
+           Changes BaseContext calling convention
+           """
+    1:     allow_dynamic_globals = True
+       
+    1:     def __init__(self, typingctx, target='cpu'):
+    1:         super().__init__(typingctx, target)
+       
+           # Overrides
+    1:     def create_module(self, name):
+   13:         return self._internal_codegen._create_empty_module(name)
+       
+    2:     @global_compiler_lock
+    2:     def init(self):
+    1:         self.is32bit = (utils.MACHINE_BITS == 32)
+    1:         self._internal_codegen = codegen.JITCPUCodegen("numba.exec")
+       
+               # Add ARM ABI functions from libgcc_s
+    1:         if platform.machine() == 'armv7l':
+                   ll.load_library_permanently('libgcc_s.so.1')
+       
+               # Map external C functions.
+    1:         externals.c_math_functions.install(self)
+       
+    1:     def load_additional_registries(self):
+               # Only initialize the NRT once something is about to be compiled. The
+               # "initialized" state doesn't need to be threadsafe, there's a lock
+               # around the internal compilation and the rtsys.initialize call can be
+               # made multiple times, worse case init just gets called a bit more often
+               # than optimal.
+  356:         rtsys.initialize(self)
+       
+               # Add implementations that work via import
+  356:         from numba.cpython import (builtins, charseq, enumimpl, # noqa F401
+                                          hashing, heapq, iterators, # noqa F401
+                                          listobj, numbers, rangeobj, # noqa F401
+                                          setobj, slicing, tupleobj, # noqa F401
+                                          unicode,) # noqa F401
+  356:         from numba.core import optional # noqa F401
+  356:         from numba.misc import gdb_hook, literal # noqa F401
+  356:         from numba.np import linalg, arraymath, arrayobj # noqa F401
+  356:         from numba.np.random import generator_core, generator_methods # noqa F401
+  356:         from numba.np.polynomial import polynomial_core, polynomial_functions # noqa F401
+  356:         from numba.typed import typeddict, dictimpl # noqa F401
+  356:         from numba.typed import typedlist, listobject # noqa F401
+  356:         from numba.experimental import jitclass, function_type # noqa F401
+  356:         from numba.np import npdatetime # noqa F401
+       
+               # Add target specific implementations
+  356:         from numba.np import npyimpl
+  356:         from numba.cpython import cmathimpl, mathimpl, printimpl, randomimpl
+  356:         from numba.misc import cffiimpl
+  356:         from numba.experimental.jitclass.base import ClassBuilder as \
+                   jitclassimpl
+  356:         self.install_registry(cmathimpl.registry)
+  356:         self.install_registry(cffiimpl.registry)
+  356:         self.install_registry(mathimpl.registry)
+  356:         self.install_registry(npyimpl.registry)
+  356:         self.install_registry(printimpl.registry)
+  356:         self.install_registry(randomimpl.registry)
+  356:         self.install_registry(jitclassimpl.class_impl_registry)
+       
+               # load 3rd party extensions
+  356:         numba.core.entrypoints.init_all()
+       
+               # fix for #8940
+  356:         from numba.np.unsafe import ndarray # noqa F401
+       
+    2:     @property
+    2:     def target_data(self):
+   62:         return self._internal_codegen.target_data
+       
+    1:     def with_aot_codegen(self, name, **aot_options):
+               aot_codegen = codegen.AOTCPUCodegen(name, **aot_options)
+               return self.subtarget(_internal_codegen=aot_codegen,
+                                     aot_mode=True)
+       
+    1:     def codegen(self):
+  127:         return self._internal_codegen
+       
+    2:     @property
+    2:     def call_conv(self):
+  387:         return callconv.CPUCallConv(self)
+       
+    1:     def get_env_body(self, builder, envptr):
+               """
+               From the given *envptr* (a pointer to a _dynfunc.Environment object),
+               get a EnvBody allowing structured access to environment fields.
+               """
+    4:         body_ptr = cgutils.pointer_add(
+    2:             builder, envptr, _dynfunc._impl_info['offsetof_env_body'])
+    2:         return EnvBody(self, builder, ref=body_ptr, cast_ref=True)
+       
+    1:     def get_env_manager(self, builder, return_pyobject=False):
+               envgv = self.declare_env_global(builder.module,
+                                               self.get_env_name(self.fndesc))
+               envarg = builder.load(envgv)
+               pyapi = self.get_python_api(builder)
+               pyapi.emit_environment_sentry(
+                   envarg,
+                   return_pyobject=return_pyobject,
+                   debug_msg=self.fndesc.env_name,
+               )
+               env_body = self.get_env_body(builder, envarg)
+               return pyapi.get_env_manager(self.environment, env_body, envarg)
+       
+    1:     def get_generator_state(self, builder, genptr, return_type):
+               """
+               From the given *genptr* (a pointer to a _dynfunc.Generator object),
+               get a pointer to its state area.
+               """
+               return cgutils.pointer_add(
+                   builder, genptr, _dynfunc._impl_info['offsetof_generator_state'],
+                   return_type=return_type)
+       
+    1:     def build_list(self, builder, list_type, items):
+               """
+               Build a list from the Numba *list_type* and its initial *items*.
+               """
+               from numba.cpython import listobj
+               return listobj.build_list(self, builder, list_type, items)
+       
+    1:     def build_set(self, builder, set_type, items):
+               """
+               Build a set from the Numba *set_type* and its initial *items*.
+               """
+               from numba.cpython import setobj
+               return setobj.build_set(self, builder, set_type, items)
+       
+    1:     def build_map(self, builder, dict_type, item_types, items):
+               from numba.typed import dictobject
+       
+               return dictobject.build_map(self, builder, dict_type, item_types, items)
+       
+    1:     def post_lowering(self, mod, library):
+   24:         if self.fastmath:
+                   fastmathpass.rewrite_module(mod, self.fastmath)
+       
+   24:         if self.is32bit:
+                   # 32-bit machine needs to replace all 64-bit div/rem to avoid
+                   # calls to compiler-rt
+                   intrinsics.fix_divmod(mod)
+       
+   24:         library.add_linking_library(rtsys.library)
+       
+    1:     def create_cpython_wrapper(self, library, fndesc, env, call_helper,
+    1:                                release_gil=False):
+    2:         wrapper_module = self.create_module("wrapper")
+    2:         fnty = self.call_conv.get_function_type(fndesc.restype, fndesc.argtypes)
+    4:         wrapper_callee = ir.Function(wrapper_module, fnty,
+    2:                                      fndesc.llvm_func_name)
+    4:         builder = PyCallWrapper(self, wrapper_module, wrapper_callee,
+    2:                                 fndesc, env, call_helper=call_helper,
+    2:                                 release_gil=release_gil)
+    2:         builder.build()
+    2:         library.add_ir_module(wrapper_module)
+       
+    1:     def create_cfunc_wrapper(self, library, fndesc, env, call_helper):
+   11:         wrapper_module = self.create_module("cfunc_wrapper")
+   11:         fnty = self.call_conv.get_function_type(fndesc.restype, fndesc.argtypes)
+   22:         wrapper_callee = ir.Function(wrapper_module, fnty,
+   11:                                      fndesc.llvm_func_name)
+       
+   46:         ll_argtypes = [self.get_value_type(ty) for ty in fndesc.argtypes]
+   11:         ll_return_type = self.get_value_type(fndesc.restype)
+   11:         wrapty = ir.FunctionType(ll_return_type, ll_argtypes)
+   22:         wrapfn = ir.Function(wrapper_module, wrapty,
+   11:                              fndesc.llvm_cfunc_wrapper_name)
+   11:         builder = ir.IRBuilder(wrapfn.append_basic_block('entry'))
+       
+   22:         status, out = self.call_conv.call_function(
+   11:             builder, wrapper_callee, fndesc.restype, fndesc.argtypes,
+   11:             wrapfn.args, attrs=('noinline',))
+       
+   22:         with builder.if_then(status.is_error, likely=False):
+                   # If (and only if) an error occurred, acquire the GIL
+                   # and use the interpreter to write out the exception.
+   11:             pyapi = self.get_python_api(builder)
+   11:             gil_state = pyapi.gil_ensure()
+   11:             self.call_conv.raise_error(builder, pyapi, status)
+   11:             cstr = self.insert_const_string(builder.module, repr(self))
+   11:             strobj = pyapi.string_from_string(cstr)
+   11:             pyapi.err_write_unraisable(strobj)
+   11:             pyapi.decref(strobj)
+   11:             pyapi.gil_release(gil_state)
+       
+   11:         builder.ret(out)
+   11:         library.add_ir_module(wrapper_module)
+       
+    1:     def get_executable(self, library, fndesc, env):
+               """
+               Returns
+               -------
+               (cfunc, fnptr)
+       
+               - cfunc
+                   callable function (Can be None)
+               - fnptr
+                   callable function address
+               - env
+                   an execution environment (from _dynfunc)
+               """
+               # Code generation
+   40:         fnptr = library.get_pointer_to_function(
+   20:             fndesc.llvm_cpython_wrapper_name)
+       
+               # Note: we avoid reusing the original docstring to avoid encoding
+               # issues on Python 2, see issue #1908
+   20:         doc = "compiled wrapper for %r" % (fndesc.qualname,)
+   40:         cfunc = _dynfunc.make_function(fndesc.lookup_module(),
+   20:                                        fndesc.qualname.split('.')[-1],
+   20:                                        doc, fnptr, env,
+                                              # objects to keepalive with the function
+   20:                                        (library,)
+                                              )
+   20:         library.codegen.set_env(self.get_env_name(fndesc), env)
+   20:         return cfunc
+       
+    1:     def calc_array_sizeof(self, ndim):
+               '''
+               Calculate the size of an array struct on the CPU target
+               '''
+               aryty = types.Array(types.int32, ndim, 'A')
+               return self.get_abi_sizeof(self.get_value_type(aryty))
+       
+           # Overrides
+    1:     def get_ufunc_info(self, ufunc_key):
+   11:         return ufunc_db.get_ufunc_info(ufunc_key)
+       
+       
+       # ----------------------------------------------------------------------------
+       # TargetOptions
+       
+    2: _options_mixin = include_default_options(
+    1:     "nopython",
+    1:     "forceobj",
+    1:     "looplift",
+    1:     "_nrt",
+    1:     "debug",
+    1:     "boundscheck",
+    1:     "nogil",
+    1:     "no_rewrites",
+    1:     "no_cpython_wrapper",
+    1:     "no_cfunc_wrapper",
+    1:     "parallel",
+    1:     "fastmath",
+    1:     "error_model",
+    1:     "inline",
+    1:     "forceinline",
+           # Add "target_backend" as a accepted option for the CPU in @jit(...)
+    1:     "target_backend",
+    1:     "_dbg_extend_lifetimes",
+    1:     "_dbg_optnone",
+       )
+       
+       
+    2: class CPUTargetOptions(_options_mixin, TargetOptions):
+    1:     def finalize(self, flags, options):
+   17:         if not flags.is_set("enable_pyobject"):
+                   flags.enable_pyobject = True
+       
+   17:         if not flags.is_set("enable_looplift"):
+   17:             flags.enable_looplift = True
+       
+   17:         flags.inherit_if_not_set("nrt", default=True)
+       
+   17:         if not flags.is_set("debuginfo"):
+   17:             flags.debuginfo = config.DEBUGINFO_DEFAULT
+       
+   17:         if not flags.is_set("dbg_extend_lifetimes"):
+   17:             if flags.debuginfo:
+                       # auto turn on extend-lifetimes if debuginfo is on and
+                       # dbg_extend_lifetimes is not set
+                       flags.dbg_extend_lifetimes = True
+                   else:
+                       # set flag using env-var config
+   17:                 flags.dbg_extend_lifetimes = config.EXTEND_VARIABLE_LIFETIMES
+       
+   17:         if not flags.is_set("boundscheck"):
+                   flags.boundscheck = flags.debuginfo
+       
+   17:         flags.enable_pyobject_looplift = True
+       
+   17:         flags.inherit_if_not_set("fastmath")
+       
+   17:         flags.inherit_if_not_set("error_model", default="python")
+       
+               # Add "target_backend" as a option that inherits from the caller
+   17:         flags.inherit_if_not_set("target_backend")
+       
+   17:         flags.inherit_if_not_set("forceinline")
+       
+   17:         if flags.forceinline:
+                   # forceinline turns off optnone, just like clang.
+                   flags.optnone = False

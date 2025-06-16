@@ -1,0 +1,7 @@
+    1: from .linear_model import yule_walker
+       
+    1: from statsmodels.tools._testing import PytestTester
+       
+    1: __all__ = ['yule_walker', 'test']
+       
+    1: test = PytestTester()

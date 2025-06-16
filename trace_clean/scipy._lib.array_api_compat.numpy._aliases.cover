@@ -1,0 +1,81 @@
+    1: from __future__ import annotations
+       
+    1: from functools import partial
+       
+    1: from ..common import _aliases
+       
+    1: from .._internal import get_xp
+       
+    1: asarray = asarray_numpy = partial(_aliases._asarray, namespace='numpy')
+    1: asarray.__doc__ = _aliases._asarray.__doc__
+    1: del partial
+       
+    1: import numpy as np
+    1: bool = np.bool_
+       
+       # Basic renames
+    1: acos = np.arccos
+    1: acosh = np.arccosh
+    1: asin = np.arcsin
+    1: asinh = np.arcsinh
+    1: atan = np.arctan
+    1: atan2 = np.arctan2
+    1: atanh = np.arctanh
+    1: bitwise_left_shift = np.left_shift
+    1: bitwise_invert = np.invert
+    1: bitwise_right_shift = np.right_shift
+    1: concat = np.concatenate
+    1: pow = np.power
+       
+    1: arange = get_xp(np)(_aliases.arange)
+    1: empty = get_xp(np)(_aliases.empty)
+    1: empty_like = get_xp(np)(_aliases.empty_like)
+    1: eye = get_xp(np)(_aliases.eye)
+    1: full = get_xp(np)(_aliases.full)
+    1: full_like = get_xp(np)(_aliases.full_like)
+    1: linspace = get_xp(np)(_aliases.linspace)
+    1: ones = get_xp(np)(_aliases.ones)
+    1: ones_like = get_xp(np)(_aliases.ones_like)
+    1: zeros = get_xp(np)(_aliases.zeros)
+    1: zeros_like = get_xp(np)(_aliases.zeros_like)
+    1: UniqueAllResult = get_xp(np)(_aliases.UniqueAllResult)
+    1: UniqueCountsResult = get_xp(np)(_aliases.UniqueCountsResult)
+    1: UniqueInverseResult = get_xp(np)(_aliases.UniqueInverseResult)
+    1: unique_all = get_xp(np)(_aliases.unique_all)
+    1: unique_counts = get_xp(np)(_aliases.unique_counts)
+    1: unique_inverse = get_xp(np)(_aliases.unique_inverse)
+    1: unique_values = get_xp(np)(_aliases.unique_values)
+    1: astype = _aliases.astype
+    1: std = get_xp(np)(_aliases.std)
+    1: var = get_xp(np)(_aliases.var)
+    1: permute_dims = get_xp(np)(_aliases.permute_dims)
+    1: reshape = get_xp(np)(_aliases.reshape)
+    1: argsort = get_xp(np)(_aliases.argsort)
+    1: sort = get_xp(np)(_aliases.sort)
+    1: nonzero = get_xp(np)(_aliases.nonzero)
+    1: sum = get_xp(np)(_aliases.sum)
+    1: prod = get_xp(np)(_aliases.prod)
+    1: ceil = get_xp(np)(_aliases.ceil)
+    1: floor = get_xp(np)(_aliases.floor)
+    1: trunc = get_xp(np)(_aliases.trunc)
+    1: matmul = get_xp(np)(_aliases.matmul)
+    1: matrix_transpose = get_xp(np)(_aliases.matrix_transpose)
+    1: tensordot = get_xp(np)(_aliases.tensordot)
+       
+       # These functions are completely new here. If the library already has them
+       # (i.e., numpy 2.0), use the library version instead of our wrapper.
+    1: if hasattr(np, 'vecdot'):
+           vecdot = np.vecdot
+       else:
+    1:     vecdot = get_xp(np)(_aliases.vecdot)
+    1: if hasattr(np, 'isdtype'):
+           isdtype = np.isdtype
+       else:
+    1:     isdtype = get_xp(np)(_aliases.isdtype)
+       
+    1: __all__ = _aliases.__all__ + ['asarray', 'asarray_numpy', 'bool', 'acos',
+                                     'acosh', 'asin', 'asinh', 'atan', 'atan2',
+                                     'atanh', 'bitwise_left_shift', 'bitwise_invert',
+                                     'bitwise_right_shift', 'concat', 'pow']
+       
+    1: _all_ignore = ['np', 'get_xp']

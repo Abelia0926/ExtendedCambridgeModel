@@ -1,0 +1,463 @@
+    1: import timeit
+    1: from abc import abstractmethod, ABCMeta
+    1: from collections import namedtuple, OrderedDict
+    1: import inspect
+    1: from pprint import pformat
+       
+       
+    1: from numba.core.compiler_lock import global_compiler_lock
+    1: from numba.core import errors, config, transforms, utils
+    1: from numba.core.tracing import event
+    1: from numba.core.postproc import PostProcessor
+    1: from numba.core.ir_utils import enforce_no_dels, legalize_single_scope
+    1: import numba.core.event as ev
+       
+       # terminal color markup
+    1: _termcolor = errors.termcolor()
+       
+       
+    2: class SimpleTimer(object):
+    1:     """
+           A simple context managed timer
+           """
+       
+    1:     def __enter__(self):
+ 1872:         self.ts = timeit.default_timer()
+ 1872:         return self
+       
+    1:     def __exit__(self, *exc):
+ 1872:         self.elapsed = timeit.default_timer() - self.ts
+       
+       
+    2: class CompilerPass(metaclass=ABCMeta):
+    1:     """ The base class for all compiler passes.
+           """
+       
+    2:     @abstractmethod
+    2:     def __init__(self, *args, **kwargs):
+   69:         self._analysis = None
+   69:         self._pass_id = None
+       
+    2:     @classmethod
+    2:     def name(cls):
+               """
+               Returns the name of the pass
+               """
+ 2541:         return cls._name
+       
+    2:     @property
+    2:     def pass_id(self):
+               """
+               The ID of the pass
+               """
+               return self._pass_id
+       
+    2:     @pass_id.setter
+    2:     def pass_id(self, val):
+               """
+               Sets the ID of the pass
+               """
+               self._pass_id = val
+       
+    2:     @property
+    2:     def analysis(self):
+               """
+               Analysis data for the pass
+               """
+               return self._analysis
+       
+    2:     @analysis.setter
+    2:     def analysis(self, val):
+               """
+               Set the analysis data for the pass
+               """
+  624:         self._analysis = val
+       
+    1:     def run_initialization(self, *args, **kwargs):
+               """
+               Runs the initialization sequence for the pass, will run before
+               `run_pass`.
+               """
+  624:         return False
+       
+    2:     @abstractmethod
+    2:     def run_pass(self, *args, **kwargs):
+               """
+               Runs the pass itself. Must return True/False depending on whether
+               statement level modification took place.
+               """
+               pass
+       
+    1:     def run_finalizer(self, *args, **kwargs):
+               """
+               Runs the initialization sequence for the pass, will run before
+               `run_pass`.
+               """
+  624:         return False
+       
+    1:     def get_analysis_usage(self, AU):
+               """ Override to set analysis usage
+               """
+ 1056:         pass
+       
+    1:     def get_analysis(self, pass_name):
+               """
+               Gets the analysis from a given pass
+               """
+   48:         return self._analysis[pass_name]
+       
+       
+    2: class SSACompliantMixin(object):
+    1:     """ Mixin to indicate a pass is SSA form compliant. Nothing is asserted
+           about this condition at present.
+           """
+    1:     pass
+       
+       
+    2: class FunctionPass(CompilerPass):
+    1:     """ Base class for function passes
+           """
+    1:     pass
+       
+       
+    2: class AnalysisPass(CompilerPass):
+    1:     """ Base class for analysis passes (no modification made to state)
+           """
+    1:     pass
+       
+       
+    2: class LoweringPass(CompilerPass):
+    1:     """ Base class for lowering passes
+           """
+    1:     pass
+       
+       
+    2: class AnalysisUsage(object):
+    1:     """This looks and behaves like LLVM's AnalysisUsage because its like that.
+           """
+       
+    1:     def __init__(self):
+ 1248:         self._required = set()
+ 1248:         self._preserved = set()
+       
+    1:     def get_required_set(self):
+ 1200:         return self._required
+       
+    1:     def get_preserved_set(self):
+               return self._preserved
+       
+    1:     def add_required(self, pss):
+  192:         self._required.add(pss)
+       
+    1:     def add_preserved(self, pss):
+               self._preserved.add(pss)
+       
+    1:     def __str__(self):
+               return "required: %s\n" % self._required
+       
+       
+    1: _DEBUG = False
+       
+       
+    1: def debug_print(*args, **kwargs):
+           if _DEBUG:
+               print(*args, **kwargs)
+       
+       
+    1: pass_timings = namedtuple('pass_timings', 'init run finalize')
+       
+       
+    2: class PassManager(object):
+    1:     """
+           The PassManager is a named instance of a particular compilation pipeline
+           """
+           # TODO: Eventually enable this, it enforces self consistency after each pass
+    1:     _ENFORCING = False
+       
+    1:     def __init__(self, pipeline_name):
+               """
+               Create a new pipeline with name "pipeline_name"
+               """
+   96:         self.passes = []
+   96:         self.exec_times = OrderedDict()
+   96:         self._finalized = False
+   96:         self._analysis = None
+   96:         self._print_after = None
+   96:         self.pipeline_name = pipeline_name
+       
+    1:     def _validate_pass(self, pass_cls):
+ 1872:         if (not (isinstance(pass_cls, str) or
+  624:                  (inspect.isclass(pass_cls) and
+  624:                   issubclass(pass_cls, CompilerPass)))):
+                   msg = ("Pass must be referenced by name or be a subclass of a "
+                          "CompilerPass. Have %s" % pass_cls)
+                   raise TypeError(msg)
+  624:         if isinstance(pass_cls, str):
+                   pass_cls = _pass_registry.find_by_name(pass_cls)
+               else:
+  624:             if not _pass_registry.is_registered(pass_cls):
+                       raise ValueError("Pass %s is not registered" % pass_cls)
+       
+    1:     def add_pass(self, pss, description=""):
+               """
+               Append a pass to the PassManager's compilation pipeline
+               """
+  624:         self._validate_pass(pss)
+  624:         func_desc_tuple = (pss, description)
+  624:         self.passes.append(func_desc_tuple)
+  624:         self._finalized = False
+       
+    1:     def add_pass_after(self, pass_cls, location):
+               """
+               Add a pass `pass_cls` to the PassManager's compilation pipeline after
+               the pass `location`.
+               """
+               assert self.passes
+               self._validate_pass(pass_cls)
+               self._validate_pass(location)
+               for idx, (x, _) in enumerate(self.passes):
+                   if x == location:
+                       break
+               else:
+                   raise ValueError("Could not find pass %s" % location)
+               self.passes.insert(idx + 1, (pass_cls, str(pass_cls)))
+               # if a pass has been added, it's not finalized
+               self._finalized = False
+       
+    1:     def _debug_init(self):
+               # determine after which passes IR dumps should take place
+   96:         def parse(conf_item):
+  288:             print_passes = []
+  288:             if conf_item != "none":
+                       if conf_item == "all":
+                           print_passes = [x.name() for (x, _) in self.passes]
+                       else:
+                           # we don't validate whether the named passes exist in this
+                           # pipeline the compiler may be used reentrantly and
+                           # different pipelines may contain different passes
+                           splitted = conf_item.split(',')
+                           print_passes = [x.strip() for x in splitted]
+  288:             return print_passes
+  192:         ret = (parse(config.DEBUG_PRINT_AFTER),
+   96:                parse(config.DEBUG_PRINT_BEFORE),
+   96:                parse(config.DEBUG_PRINT_WRAP),)
+   96:         return ret
+       
+    1:     def finalize(self):
+               """
+               Finalize the PassManager, after which no more passes may be added
+               without re-finalization.
+               """
+   96:         self._analysis = self.dependency_analysis()
+   96:         self._print_after, self._print_before, self._print_wrap = \
+   96:             self._debug_init()
+   96:         self._finalized = True
+       
+    2:     @property
+    2:     def finalized(self):
+   24:         return self._finalized
+       
+    1:     def _patch_error(self, desc, exc):
+               """
+               Patches the error to show the stage that it arose in.
+               """
+               newmsg = "{desc}\n{exc}".format(desc=desc, exc=exc)
+               exc.args = (newmsg,)
+               return exc
+       
+    2:     @global_compiler_lock  # this need a lock, likely calls LLVM
+    2:     def _runPass(self, index, pss, internal_state):
+  624:         mutated = False
+       
+  624:         def check(func, compiler_state):
+ 1872:             mangled = func(compiler_state)
+ 1872:             if mangled not in (True, False):
+                       msg = ("CompilerPass implementations should return True/False. "
+                              "CompilerPass with name '%s' did not.")
+                       raise ValueError(msg % pss.name())
+ 1872:             return mangled
+       
+  624:         def debug_print(pass_name, print_condition, printable_condition):
+ 1248:             if pass_name in print_condition:
+                       fid = internal_state.func_id
+                       args = (fid.modname, fid.func_qualname, self.pipeline_name,
+                               printable_condition, pass_name)
+                       print(("%s.%s: %s: %s %s" % args).center(120, '-'))
+                       if internal_state.func_ir is not None:
+                           internal_state.func_ir.dump()
+                       else:
+                           print("func_ir is None")
+       
+               # debug print before this pass?
+  624:         debug_print(pss.name(), self._print_before + self._print_wrap, "BEFORE")
+       
+               # wire in the analysis info so it's accessible
+  624:         pss.analysis = self._analysis
+       
+  624:         qualname = internal_state.func_id.func_qualname
+       
+ 1248:         ev_details = dict(
+  624:             name=f"{pss.name()} [{qualname}]",
+  624:             qualname=qualname,
+  624:             module=internal_state.func_id.modname,
+  624:             flags=pformat(internal_state.flags.values()),
+  624:             args=str(internal_state.args),
+  624:             return_type=str(internal_state.return_type),
+               )
+ 1248:         with ev.trigger_event("numba:run_pass", data=ev_details):
+ 1248:             with SimpleTimer() as init_time:
+  624:                 mutated |= check(pss.run_initialization, internal_state)
+ 1248:             with SimpleTimer() as pass_time:
+  624:                 mutated |= check(pss.run_pass, internal_state)
+ 1248:             with SimpleTimer() as finalize_time:
+  624:                 mutated |= check(pss.run_finalizer, internal_state)
+       
+               # Check that if the pass is an instance of a FunctionPass that it hasn't
+               # emitted ir.Dels.
+  624:         if isinstance(pss, FunctionPass):
+  480:             enforce_no_dels(internal_state.func_ir)
+       
+  624:         if self._ENFORCING:
+                   # TODO: Add in self consistency enforcement for
+                   # `func_ir._definitions` etc
+                   if _pass_registry.get(pss.__class__).mutates_CFG:
+                       if mutated:  # block level changes, rebuild all
+                           PostProcessor(internal_state.func_ir).run()
+                       else:  # CFG level changes rebuild CFG
+                           internal_state.func_ir.blocks = transforms.canonicalize_cfg(
+                               internal_state.func_ir.blocks)
+                   # Check the func_ir has exactly one Scope instance
+                   if not legalize_single_scope(internal_state.func_ir.blocks):
+                       raise errors.CompilerError(
+                           f"multiple scope in func_ir detected in {pss}",
+                       )
+               # inject runtimes
+ 1248:         pt = pass_timings(init_time.elapsed, pass_time.elapsed,
+  624:                           finalize_time.elapsed)
+  624:         self.exec_times["%s_%s" % (index, pss.name())] = pt
+       
+               # debug print after this pass?
+  624:         debug_print(pss.name(), self._print_after + self._print_wrap, "AFTER")
+       
+    1:     def run(self, state):
+               """
+               Run the defined pipelines on the state.
+               """
+   24:         from numba.core.compiler import _EarlyPipelineCompletion
+   24:         if not self.finalized:
+                   raise RuntimeError("Cannot run non-finalised pipeline")
+       
+               # walk the passes and run them
+  648:         for idx, (pss, pass_desc) in enumerate(self.passes):
+  624:             try:
+  624:                 event("-- %s" % pass_desc)
+  624:                 pass_inst = _pass_registry.get(pss).pass_inst
+  624:                 if isinstance(pass_inst, CompilerPass):
+  624:                     self._runPass(idx, pass_inst, state)
+                       else:
+                           raise BaseException("Legacy pass in use")
+                   except _EarlyPipelineCompletion as e:
+                       raise e
+                   except Exception as e:
+                       if (utils.use_new_style_errors() and not
+                               isinstance(e, errors.NumbaError)):
+                           raise e
+                       msg = "Failed in %s mode pipeline (step: %s)" % \
+                           (self.pipeline_name, pass_desc)
+                       patched_exception = self._patch_error(msg, e)
+                       raise patched_exception
+       
+    1:     def dependency_analysis(self):
+               """
+               Computes dependency analysis
+               """
+   96:         deps = dict()
+ 1344:         for (pss, _) in self.passes:
+ 1248:             x = _pass_registry.get(pss).pass_inst
+ 1248:             au = AnalysisUsage()
+ 1248:             x.get_analysis_usage(au)
+ 1248:             deps[type(x)] = au
+       
+   96:         requires_map = dict()
+ 1296:         for k, v in deps.items():
+ 1200:             requires_map[k] = v.get_required_set()
+       
+   96:         def resolve_requires(key, rmap):
+ 1200:             def walk(lkey, rmap):
+  144:                 dep_set = rmap[lkey] if lkey in rmap else set()
+  144:                 if dep_set:
+                           for x in dep_set:
+                               dep_set |= (walk(x, rmap))
+                           return dep_set
+                       else:
+  144:                     return set()
+ 1200:             ret = set()
+ 1344:             for k in key:
+  144:                 ret |= walk(k, rmap)
+ 1200:             return ret
+       
+   96:         dep_chain = dict()
+ 1296:         for k, v in requires_map.items():
+ 1200:             dep_chain[k] = set(v) | (resolve_requires(v, requires_map))
+       
+   96:         return dep_chain
+       
+       
+    1: pass_info = namedtuple('pass_info', 'pass_inst mutates_CFG analysis_only')
+       
+       
+    2: class PassRegistry(object):
+    1:     """
+           Pass registry singleton class.
+           """
+       
+    1:     _id = 0
+       
+    1:     _registry = dict()
+       
+    1:     def register(self, mutates_CFG, analysis_only):
+   45:         def make_festive(pass_class):
+   45:             assert not self.is_registered(pass_class)
+   45:             assert not self._does_pass_name_alias(pass_class.name())
+   45:             pass_class.pass_id = self._id
+   45:             self._id += 1
+   90:             self._registry[pass_class] = pass_info(pass_class(), mutates_CFG,
+   45:                                                    analysis_only)
+   45:             return pass_class
+   45:         return make_festive
+       
+    1:     def is_registered(self, clazz):
+ 2541:         return clazz in self._registry.keys()
+       
+    1:     def get(self, clazz):
+ 1872:         assert self.is_registered(clazz)
+ 1872:         return self._registry[clazz]
+       
+    1:     def _does_pass_name_alias(self, check):
+ 1035:         for k, v in self._registry.items():
+  990:             if v.pass_inst.name == check:
+                       return True
+   45:         return False
+       
+    1:     def find_by_name(self, class_name):
+               assert isinstance(class_name, str)
+               for k, v in self._registry.items():
+                   if v.pass_inst.name == class_name:
+                       return v
+               else:
+                   raise ValueError("No pass with name %s is registered" % class_name)
+       
+    1:     def dump(self):
+               for k, v in self._registry.items():
+                   print("%s: %s" % (k, v))
+       
+       
+    1: _pass_registry = PassRegistry()
+    1: del PassRegistry
+       
+       
+    1: """
+       register_pass is used to register a compiler pass class for use with PassManager
+       instances.
+       """
+    1: register_pass = _pass_registry.register

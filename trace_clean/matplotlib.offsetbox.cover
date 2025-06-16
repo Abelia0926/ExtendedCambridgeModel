@@ -1,0 +1,1607 @@
+    1: r"""
+       Container classes for `.Artist`\s.
+       
+       `OffsetBox`
+           The base of all container artists defined in this module.
+       
+       `AnchoredOffsetbox`, `AnchoredText`
+           Anchor and align an arbitrary `.Artist` or a text relative to the parent
+           axes or a specific anchor point.
+       
+       `DrawingArea`
+           A container with fixed width and height. Children have a fixed position
+           inside the container and may be clipped.
+       
+       `HPacker`, `VPacker`
+           Containers for layouting their children vertically or horizontally.
+       
+       `PaddedBox`
+           A container to add a padding around an `.Artist`.
+       
+       `TextArea`
+           Contains a single `.Text` instance.
+       """
+       
+    1: import functools
+       
+    1: import numpy as np
+       
+    1: import matplotlib as mpl
+    1: from matplotlib import _api, _docstring
+    1: import matplotlib.artist as martist
+    1: import matplotlib.path as mpath
+    1: import matplotlib.text as mtext
+    1: import matplotlib.transforms as mtransforms
+    1: from matplotlib.font_manager import FontProperties
+    1: from matplotlib.image import BboxImage
+    1: from matplotlib.patches import (
+           FancyBboxPatch, FancyArrowPatch, bbox_artist as mbbox_artist)
+    1: from matplotlib.transforms import Bbox, BboxBase, TransformedBbox
+       
+       
+    1: DEBUG = False
+       
+       
+    1: def _compat_get_offset(meth):
+           """
+           Decorator for the get_offset method of OffsetBox and subclasses, that
+           allows supporting both the new signature (self, bbox, renderer) and the old
+           signature (self, width, height, xdescent, ydescent, renderer).
+           """
+    4:     sigs = [lambda self, width, height, xdescent, ydescent, renderer: locals(),
+   29:             lambda self, bbox, renderer: locals()]
+       
+    4:     @functools.wraps(meth)
+    4:     def get_offset(self, *args, **kwargs):
+   27:         params = _api.select_matching_signature(sigs, self, *args, **kwargs)
+   27:         bbox = (params["bbox"] if "bbox" in params else
+                       Bbox.from_bounds(-params["xdescent"], -params["ydescent"],
+                                        params["width"], params["height"]))
+   27:         return meth(params["self"], bbox, params["renderer"])
+    2:     return get_offset
+       
+       
+       # for debugging use
+    1: def _bbox_artist(*args, **kwargs):
+   40:     if DEBUG:
+               mbbox_artist(*args, **kwargs)
+       
+       
+    1: def _get_packed_offsets(widths, total, sep, mode="fixed"):
+           r"""
+           Pack boxes specified by their *widths*.
+       
+           For simplicity of the description, the terminology used here assumes a
+           horizontal layout, but the function works equally for a vertical layout.
+       
+           There are three packing *mode*\s:
+       
+           - 'fixed': The elements are packed tight to the left with a spacing of
+             *sep* in between. If *total* is *None* the returned total will be the
+             right edge of the last box. A non-*None* total will be passed unchecked
+             to the output. In particular this means that right edge of the last
+             box may be further to the right than the returned total.
+       
+           - 'expand': Distribute the boxes with equal spacing so that the left edge
+             of the first box is at 0, and the right edge of the last box is at
+             *total*. The parameter *sep* is ignored in this mode. A total of *None*
+             is accepted and considered equal to 1. The total is returned unchanged
+             (except for the conversion *None* to 1). If the total is smaller than
+             the sum of the widths, the laid out boxes will overlap.
+       
+           - 'equal': If *total* is given, the total space is divided in N equal
+             ranges and each box is left-aligned within its subspace.
+             Otherwise (*total* is *None*), *sep* must be provided and each box is
+             left-aligned in its subspace of width ``(max(widths) + sep)``. The
+             total width is then calculated to be ``N * (max(widths) + sep)``.
+       
+           Parameters
+           ----------
+           widths : list of float
+               Widths of boxes to be packed.
+           total : float or None
+               Intended total length. *None* if not used.
+           sep : float or None
+               Spacing between boxes.
+           mode : {'fixed', 'expand', 'equal'}
+               The packing mode.
+       
+           Returns
+           -------
+           total : float
+               The total width needed to accommodate the laid out boxes.
+           offsets : array of float
+               The left offsets of the boxes.
+           """
+   82:     _api.check_in_list(["fixed", "expand", "equal"], mode=mode)
+       
+   82:     if mode == "fixed":
+  337:         offsets_ = np.cumsum([0] + [w + sep for w in widths])
+   82:         offsets = offsets_[:-1]
+   82:         if total is None:
+   82:             total = offsets_[-1] - sep
+   82:         return total, offsets
+       
+           elif mode == "expand":
+               # This is a bit of a hack to avoid a TypeError when *total*
+               # is None and used in conjugation with tight layout.
+               if total is None:
+                   total = 1
+               if len(widths) > 1:
+                   sep = (total - sum(widths)) / (len(widths) - 1)
+               else:
+                   sep = 0
+               offsets_ = np.cumsum([0] + [w + sep for w in widths])
+               offsets = offsets_[:-1]
+               return total, offsets
+       
+           elif mode == "equal":
+               maxh = max(widths)
+               if total is None:
+                   if sep is None:
+                       raise ValueError("total and sep cannot both be None when "
+                                        "using layout mode 'equal'")
+                   total = (maxh + sep) * len(widths)
+               else:
+                   sep = total / len(widths) - maxh
+               offsets = (maxh + sep) * np.arange(len(widths))
+               return total, offsets
+       
+       
+    1: def _get_aligned_offsets(yspans, height, align="baseline"):
+           """
+           Align boxes each specified by their ``(y0, y1)`` spans.
+       
+           For simplicity of the description, the terminology used here assumes a
+           horizontal layout (i.e., vertical alignment), but the function works
+           equally for a vertical layout.
+       
+           Parameters
+           ----------
+           yspans
+               List of (y0, y1) spans of boxes to be aligned.
+           height : float or None
+               Intended total height. If None, the maximum of the heights
+               (``y1 - y0``) in *yspans* is used.
+           align : {'baseline', 'left', 'top', 'right', 'bottom', 'center'}
+               The alignment anchor of the boxes.
+       
+           Returns
+           -------
+           (y0, y1)
+               y range spanned by the packing.  If a *height* was originally passed
+               in, then for all alignments other than "baseline", a span of ``(0,
+               height)`` is used without checking that it is actually large enough).
+           descent
+               The descent of the packing.
+           offsets
+               The bottom offsets of the boxes.
+           """
+       
+  164:     _api.check_in_list(
+   82:         ["baseline", "left", "top", "right", "bottom", "center"], align=align)
+   82:     if height is None:
+  337:         height = max(y1 - y0 for y0, y1 in yspans)
+       
+   82:     if align == "baseline":
+  537:         yspan = (min(y0 for y0, y1 in yspans), max(y1 for y0, y1 in yspans))
+   71:         offsets = [0] * len(yspans)
+   11:     elif align in ["left", "bottom"]:
+               yspan = (0, height)
+               offsets = [-y0 for y0, y1 in yspans]
+   11:     elif align in ["right", "top"]:
+               yspan = (0, height)
+               offsets = [height - y1 for y0, y1 in yspans]
+   11:     elif align == "center":
+   11:         yspan = (0, height)
+   33:         offsets = [(height - (y1 - y0)) * .5 - y0 for y0, y1 in yspans]
+       
+   82:     return yspan, offsets
+       
+       
+    2: class OffsetBox(martist.Artist):
+    1:     """
+           The OffsetBox is a simple container artist.
+       
+           The child artists are meant to be drawn at a relative position to its
+           parent.
+       
+           Being an artist itself, all parameters are passed on to `.Artist`.
+           """
+    1:     def __init__(self, *args, **kwargs):
+   22:         super().__init__(*args)
+   22:         self._internal_update(kwargs)
+               # Clipping has not been implemented in the OffsetBox family, so
+               # disable the clip flag for consistency. It can always be turned back
+               # on to zero effect.
+   22:         self.set_clip_on(False)
+   22:         self._children = []
+   22:         self._offset = (0, 0)
+       
+    1:     def set_figure(self, fig):
+               """
+               Set the `.Figure` for the `.OffsetBox` and all its children.
+       
+               Parameters
+               ----------
+               fig : `~matplotlib.figure.Figure`
+               """
+   22:         super().set_figure(fig)
+   54:         for c in self.get_children():
+   32:             c.set_figure(fig)
+       
+    2:     @martist.Artist.axes.setter
+    2:     def axes(self, ax):
+               # TODO deal with this better
+   44:         martist.Artist.axes.fset(self, ax)
+   76:         for c in self.get_children():
+   32:             if c is not None:
+   32:                 c.axes = ax
+       
+    1:     def contains(self, mouseevent):
+               """
+               Delegate the mouse event contains-check to the children.
+       
+               As a container, the `.OffsetBox` does not respond itself to
+               mouseevents.
+       
+               Parameters
+               ----------
+               mouseevent : `~matplotlib.backend_bases.MouseEvent`
+       
+               Returns
+               -------
+               contains : bool
+                   Whether any values are within the radius.
+               details : dict
+                   An artist-specific dictionary of details of the event context,
+                   such as which points are contained in the pick radius. See the
+                   individual Artist subclasses for details.
+       
+               See Also
+               --------
+               .Artist.contains
+               """
+               if self._different_canvas(mouseevent):
+                   return False, {}
+               for c in self.get_children():
+                   a, b = c.contains(mouseevent)
+                   if a:
+                       return a, b
+               return False, {}
+       
+    1:     def set_offset(self, xy):
+               """
+               Set the offset.
+       
+               Parameters
+               ----------
+               xy : (float, float) or callable
+                   The (x, y) coordinates of the offset in display units. These can
+                   either be given explicitly as a tuple (x, y), or by providing a
+                   function that converts the extent into the offset. This function
+                   must have the signature::
+       
+                       def offset(width, height, xdescent, ydescent, renderer) \
+       -> (float, float)
+               """
+   18:         self._offset = xy
+   18:         self.stale = True
+       
+    2:     @_compat_get_offset
+    2:     def get_offset(self, bbox, renderer):
+               """
+               Return the offset as a tuple (x, y).
+       
+               The extent parameters have to be provided to handle the case where the
+               offset is dynamically determined by a callable (see
+               `~.OffsetBox.set_offset`).
+       
+               Parameters
+               ----------
+               bbox : `.Bbox`
+               renderer : `.RendererBase` subclass
+               """
+   27:         return (
+   27:             self._offset(bbox.width, bbox.height, -bbox.x0, -bbox.y0, renderer)
+   27:             if callable(self._offset)
+   16:             else self._offset)
+       
+    1:     def set_width(self, width):
+               """
+               Set the width of the box.
+       
+               Parameters
+               ----------
+               width : float
+               """
+               self.width = width
+               self.stale = True
+       
+    1:     def set_height(self, height):
+               """
+               Set the height of the box.
+       
+               Parameters
+               ----------
+               height : float
+               """
+               self.height = height
+               self.stale = True
+       
+    1:     def get_visible_children(self):
+               r"""Return a list of the visible child `.Artist`\s."""
+  444:         return [c for c in self._children if c.get_visible()]
+       
+    1:     def get_children(self):
+               r"""Return a list of the child `.Artist`\s."""
+   66:         return self._children
+       
+    1:     def _get_bbox_and_child_offsets(self, renderer):
+               """
+               Return the bbox of the offsetbox and the child offsets.
+       
+               The bbox should satisfy ``x0 <= x1 and y0 <= y1``.
+       
+               Parameters
+               ----------
+               renderer : `.RendererBase` subclass
+       
+               Returns
+               -------
+               bbox
+               list of (xoffset, yoffset) pairs
+               """
+               raise NotImplementedError(
+                   "get_bbox_and_offsets must be overridden in derived classes")
+       
+    1:     def get_bbox(self, renderer):
+               """Return the bbox of the offsetbox, ignoring parent offsets."""
+   70:         bbox, offsets = self._get_bbox_and_child_offsets(renderer)
+   70:         return bbox
+       
+    1:     def get_window_extent(self, renderer=None):
+               # docstring inherited
+    7:         if renderer is None:
+                   renderer = self.get_figure(root=True)._get_renderer()
+    7:         bbox = self.get_bbox(renderer)
+    7:         try:  # Some subclasses redefine get_offset to take no args.
+    7:             px, py = self.get_offset(bbox, renderer)
+               except TypeError:
+                   px, py = self.get_offset()
+    7:         return bbox.translated(px, py)
+       
+    1:     def draw(self, renderer):
+               """
+               Update the location of children if necessary and draw them
+               to the given *renderer*.
+               """
+   20:         bbox, offsets = self._get_bbox_and_child_offsets(renderer)
+   20:         px, py = self.get_offset(bbox, renderer)
+   56:         for c, (ox, oy) in zip(self.get_visible_children(), offsets):
+   36:             c.set_offset((px + ox, py + oy))
+   36:             c.draw(renderer)
+   20:         _bbox_artist(self, renderer, fill=False, props=dict(pad=0.))
+   20:         self.stale = False
+       
+       
+    2: class PackerBase(OffsetBox):
+    2:     def __init__(self, pad=0., sep=0., width=None, height=None,
+    1:                  align="baseline", mode="fixed", children=None):
+               """
+               Parameters
+               ----------
+               pad : float, default: 0.0
+                   The boundary padding in points.
+       
+               sep : float, default: 0.0
+                   The spacing between items in points.
+       
+               width, height : float, optional
+                   Width and height of the container box in pixels, calculated if
+                   *None*.
+       
+               align : {'top', 'bottom', 'left', 'right', 'center', 'baseline'}, \
+       default: 'baseline'
+                   Alignment of boxes.
+       
+               mode : {'fixed', 'expand', 'equal'}, default: 'fixed'
+                   The packing mode.
+       
+                   - 'fixed' packs the given `.Artist`\\s tight with *sep* spacing.
+                   - 'expand' uses the maximal available space to distribute the
+                     artists with equal spacing in between.
+                   - 'equal': Each artist an equal fraction of the available space
+                     and is left-aligned (or top-aligned) therein.
+       
+               children : list of `.Artist`
+                   The artists to pack.
+       
+               Notes
+               -----
+               *pad* and *sep* are in points and will be scaled with the renderer
+               dpi, while *width* and *height* are in pixels.
+               """
+   10:         super().__init__()
+   10:         self.height = height
+   10:         self.width = width
+   10:         self.sep = sep
+   10:         self.pad = pad
+   10:         self.mode = mode
+   10:         self.align = align
+   10:         self._children = children
+       
+       
+    2: class VPacker(PackerBase):
+    1:     """
+           VPacker packs its children vertically, automatically adjusting their
+           relative positions at draw time.
+       
+           .. code-block:: none
+       
+              +---------+
+              | Child 1 |
+              | Child 2 |
+              | Child 3 |
+              +---------+
+           """
+       
+    1:     def _get_bbox_and_child_offsets(self, renderer):
+               # docstring inherited
+   20:         dpicor = renderer.points_to_pixels(1.)
+   20:         pad = self.pad * dpicor
+   20:         sep = self.sep * dpicor
+       
+   20:         if self.width is not None:
+                   for c in self.get_visible_children():
+                       if isinstance(c, PackerBase) and c.mode == "expand":
+                           c.set_width(self.width)
+       
+   96:         bboxes = [c.get_bbox(renderer) for c in self.get_visible_children()]
+   40:         (x0, x1), xoffsets = _get_aligned_offsets(
+   96:             [bbox.intervalx for bbox in bboxes], self.width, self.align)
+   40:         height, yoffsets = _get_packed_offsets(
+   96:             [bbox.height for bbox in bboxes], self.height, sep, self.mode)
+       
+   96:         yoffsets = height - (yoffsets + [bbox.y1 for bbox in bboxes])
+   20:         ydescent = yoffsets[0]
+   20:         yoffsets = yoffsets - ydescent
+       
+   20:         return (
+   20:             Bbox.from_bounds(x0, -ydescent, x1 - x0, height).padded(pad),
+   20:             [*zip(xoffsets, yoffsets)])
+       
+       
+    2: class HPacker(PackerBase):
+    1:     """
+           HPacker packs its children horizontally, automatically adjusting their
+           relative positions at draw time.
+       
+           .. code-block:: none
+       
+              +-------------------------------+
+              | Child 1    Child 2    Child 3 |
+              +-------------------------------+
+           """
+       
+    1:     def _get_bbox_and_child_offsets(self, renderer):
+               # docstring inherited
+   70:         dpicor = renderer.points_to_pixels(1.)
+   70:         pad = self.pad * dpicor
+   70:         sep = self.sep * dpicor
+       
+  257:         bboxes = [c.get_bbox(renderer) for c in self.get_visible_children()]
+   70:         if not bboxes:
+    8:             return Bbox.from_bounds(0, 0, 0, 0).padded(pad), []
+       
+  124:         (y0, y1), yoffsets = _get_aligned_offsets(
+  241:             [bbox.intervaly for bbox in bboxes], self.height, self.align)
+  124:         width, xoffsets = _get_packed_offsets(
+  241:             [bbox.width for bbox in bboxes], self.width, sep, self.mode)
+       
+   62:         x0 = bboxes[0].x0
+  241:         xoffsets -= ([bbox.x0 for bbox in bboxes] - x0)
+       
+  124:         return (Bbox.from_bounds(x0, y0, width, y1 - y0).padded(pad),
+   62:                 [*zip(xoffsets, yoffsets)])
+       
+       
+    2: class PaddedBox(OffsetBox):
+    1:     """
+           A container to add a padding around an `.Artist`.
+       
+           The `.PaddedBox` contains a `.FancyBboxPatch` that is used to visualize
+           it when rendering.
+       
+           .. code-block:: none
+       
+              +----------------------------+
+              |                            |
+              |                            |
+              |                            |
+              | <--pad--> Artist           |
+              |             ^              |
+              |            pad             |
+              |             v              |
+              +----------------------------+
+       
+           Attributes
+           ----------
+           pad : float
+               The padding in points.
+           patch : `.FancyBboxPatch`
+               When *draw_frame* is True, this `.FancyBboxPatch` is made visible and
+               creates a border around the box.
+           """
+       
+    1:     def __init__(self, child, pad=0., *, draw_frame=False, patch_attrs=None):
+               """
+               Parameters
+               ----------
+               child : `~matplotlib.artist.Artist`
+                   The contained `.Artist`.
+               pad : float, default: 0.0
+                   The padding in points. This will be scaled with the renderer dpi.
+                   In contrast, *width* and *height* are in *pixels* and thus not
+                   scaled.
+               draw_frame : bool
+                   Whether to draw the contained `.FancyBboxPatch`.
+               patch_attrs : dict or None
+                   Additional parameters passed to the contained `.FancyBboxPatch`.
+               """
+               super().__init__()
+               self.pad = pad
+               self._children = [child]
+               self.patch = FancyBboxPatch(
+                   xy=(0.0, 0.0), width=1., height=1.,
+                   facecolor='w', edgecolor='k',
+                   mutation_scale=1,  # self.prop.get_size_in_points(),
+                   snap=True,
+                   visible=draw_frame,
+                   boxstyle="square,pad=0",
+               )
+               if patch_attrs is not None:
+                   self.patch.update(patch_attrs)
+       
+    1:     def _get_bbox_and_child_offsets(self, renderer):
+               # docstring inherited.
+               pad = self.pad * renderer.points_to_pixels(1.)
+               return (self._children[0].get_bbox(renderer).padded(pad), [(0, 0)])
+       
+    1:     def draw(self, renderer):
+               # docstring inherited
+               bbox, offsets = self._get_bbox_and_child_offsets(renderer)
+               px, py = self.get_offset(bbox, renderer)
+               for c, (ox, oy) in zip(self.get_visible_children(), offsets):
+                   c.set_offset((px + ox, py + oy))
+       
+               self.draw_frame(renderer)
+       
+               for c in self.get_visible_children():
+                   c.draw(renderer)
+       
+               self.stale = False
+       
+    1:     def update_frame(self, bbox, fontsize=None):
+               self.patch.set_bounds(bbox.bounds)
+               if fontsize:
+                   self.patch.set_mutation_scale(fontsize)
+               self.stale = True
+       
+    1:     def draw_frame(self, renderer):
+               # update the location and size of the legend
+               self.update_frame(self.get_window_extent(renderer))
+               self.patch.draw(renderer)
+       
+       
+    2: class DrawingArea(OffsetBox):
+    1:     """
+           The DrawingArea can contain any Artist as a child. The DrawingArea
+           has a fixed width and height. The position of children relative to
+           the parent is fixed. The children can be clipped at the
+           boundaries of the parent.
+           """
+       
+    1:     def __init__(self, width, height, xdescent=0., ydescent=0., clip=False):
+               """
+               Parameters
+               ----------
+               width, height : float
+                   Width and height of the container box.
+               xdescent, ydescent : float
+                   Descent of the box in x- and y-direction.
+               clip : bool
+                   Whether to clip the children to the box.
+               """
+    5:         super().__init__()
+    5:         self.width = width
+    5:         self.height = height
+    5:         self.xdescent = xdescent
+    5:         self.ydescent = ydescent
+    5:         self._clip_children = clip
+    5:         self.offset_transform = mtransforms.Affine2D()
+    5:         self.dpi_transform = mtransforms.Affine2D()
+       
+    2:     @property
+    2:     def clip_children(self):
+               """
+               If the children of this DrawingArea should be clipped
+               by DrawingArea bounding box.
+               """
+               return self._clip_children
+       
+    2:     @clip_children.setter
+    2:     def clip_children(self, val):
+               self._clip_children = bool(val)
+               self.stale = True
+       
+    1:     def get_transform(self):
+               """
+               Return the `~matplotlib.transforms.Transform` applied to the children.
+               """
+   15:         return self.dpi_transform + self.offset_transform
+       
+    1:     def set_transform(self, t):
+               """
+               set_transform is ignored.
+               """
+       
+    1:     def set_offset(self, xy):
+               """
+               Set the offset of the container.
+       
+               Parameters
+               ----------
+               xy : (float, float)
+                   The (x, y) coordinates of the offset in display units.
+               """
+   10:         self._offset = xy
+   10:         self.offset_transform.clear()
+   10:         self.offset_transform.translate(xy[0], xy[1])
+   10:         self.stale = True
+       
+    1:     def get_offset(self):
+               """Return offset of the container."""
+               return self._offset
+       
+    1:     def get_bbox(self, renderer):
+               # docstring inherited
+   55:         dpi_cor = renderer.points_to_pixels(1.)
+  110:         return Bbox.from_bounds(
+   55:             -self.xdescent * dpi_cor, -self.ydescent * dpi_cor,
+   55:             self.width * dpi_cor, self.height * dpi_cor)
+       
+    1:     def add_artist(self, a):
+               """Add an `.Artist` to the container box."""
+    5:         self._children.append(a)
+    5:         if not a.is_transform_set():
+                   a.set_transform(self.get_transform())
+    5:         if self.axes is not None:
+                   a.axes = self.axes
+    5:         fig = self.get_figure(root=False)
+    5:         if fig is not None:
+                   a.set_figure(fig)
+       
+    1:     def draw(self, renderer):
+               # docstring inherited
+       
+   10:         dpi_cor = renderer.points_to_pixels(1.)
+   10:         self.dpi_transform.clear()
+   10:         self.dpi_transform.scale(dpi_cor)
+       
+               # At this point the DrawingArea has a transform
+               # to the display space so the path created is
+               # good for clipping children
+   20:         tpath = mtransforms.TransformedPath(
+   20:             mpath.Path([[0, 0], [0, self.height],
+   10:                         [self.width, self.height],
+   10:                         [self.width, 0]]),
+   10:             self.get_transform())
+   20:         for c in self._children:
+   10:             if self._clip_children and not (c.clipbox or c._clippath):
+                       c.set_clip_path(tpath)
+   10:             c.draw(renderer)
+       
+   10:         _bbox_artist(self, renderer, fill=False, props=dict(pad=0.))
+   10:         self.stale = False
+       
+       
+    2: class TextArea(OffsetBox):
+    1:     """
+           The TextArea is a container artist for a single Text instance.
+       
+           The text is placed at (0, 0) with baseline+left alignment, by default. The
+           width and height of the TextArea instance is the width and height of its
+           child text.
+           """
+       
+    1:     def __init__(self, s,
+                        *,
+    1:                  textprops=None,
+    1:                  multilinebaseline=False,
+                        ):
+               """
+               Parameters
+               ----------
+               s : str
+                   The text to be displayed.
+               textprops : dict, default: {}
+                   Dictionary of keyword parameters to be passed to the `.Text`
+                   instance in the TextArea.
+               multilinebaseline : bool, default: False
+                   Whether the baseline for multiline text is adjusted so that it
+                   is (approximately) center-aligned with single-line text.
+               """
+    7:         if textprops is None:
+    2:             textprops = {}
+    7:         self._text = mtext.Text(0, 0, s, **textprops)
+    7:         super().__init__()
+    7:         self._children = [self._text]
+    7:         self.offset_transform = mtransforms.Affine2D()
+    7:         self._baseline_transform = mtransforms.Affine2D()
+   14:         self._text.set_transform(self.offset_transform +
+    7:                                  self._baseline_transform)
+    7:         self._multilinebaseline = multilinebaseline
+       
+    1:     def set_text(self, s):
+               """Set the text of this area as a string."""
+               self._text.set_text(s)
+               self.stale = True
+       
+    1:     def get_text(self):
+               """Return the string representation of this area's text."""
+               return self._text.get_text()
+       
+    1:     def set_multilinebaseline(self, t):
+               """
+               Set multilinebaseline.
+       
+               If True, the baseline for multiline text is adjusted so that it is
+               (approximately) center-aligned with single-line text.  This is used
+               e.g. by the legend implementation so that single-line labels are
+               baseline-aligned, but multiline labels are "center"-aligned with them.
+               """
+               self._multilinebaseline = t
+               self.stale = True
+       
+    1:     def get_multilinebaseline(self):
+               """
+               Get multilinebaseline.
+               """
+               return self._multilinebaseline
+       
+    1:     def set_transform(self, t):
+               """
+               set_transform is ignored.
+               """
+       
+    1:     def set_offset(self, xy):
+               """
+               Set the offset of the container.
+       
+               Parameters
+               ----------
+               xy : (float, float)
+                   The (x, y) coordinates of the offset in display units.
+               """
+   10:         self._offset = xy
+   10:         self.offset_transform.clear()
+   10:         self.offset_transform.translate(xy[0], xy[1])
+   10:         self.stale = True
+       
+    1:     def get_offset(self):
+               """Return offset of the container."""
+               return self._offset
+       
+    1:     def get_bbox(self, renderer):
+  110:         _, h_, d_ = renderer.get_text_width_height_descent(
+   55:             "lp", self._text._fontproperties,
+   55:             ismath="TeX" if self._text.get_usetex() else False)
+       
+   55:         bbox, info, yd = self._text._get_layout(renderer)
+   55:         w, h = bbox.size
+       
+   55:         self._baseline_transform.clear()
+       
+   55:         if len(info) > 1 and self._multilinebaseline:
+                   yd_new = 0.5 * h - 0.5 * (h_ - d_)
+                   self._baseline_transform.translate(0, yd - yd_new)
+                   yd = yd_new
+               else:  # single line
+   55:             h_d = max(h_ - d_, h - yd)
+   55:             h = h_d + yd
+       
+   55:         ha = self._text.get_horizontalalignment()
+   55:         x0 = {"left": 0, "center": -w / 2, "right": -w}[ha]
+       
+   55:         return Bbox.from_bounds(x0, -yd, w, h)
+       
+    1:     def draw(self, renderer):
+               # docstring inherited
+   10:         self._text.draw(renderer)
+   10:         _bbox_artist(self, renderer, fill=False, props=dict(pad=0.))
+   10:         self.stale = False
+       
+       
+    2: class AuxTransformBox(OffsetBox):
+    1:     """
+           Offset Box with the aux_transform. Its children will be
+           transformed with the aux_transform first then will be
+           offsetted. The absolute coordinate of the aux_transform is meaning
+           as it will be automatically adjust so that the left-lower corner
+           of the bounding box of children will be set to (0, 0) before the
+           offset transform.
+       
+           It is similar to drawing area, except that the extent of the box
+           is not predetermined but calculated from the window extent of its
+           children. Furthermore, the extent of the children will be
+           calculated in the transformed coordinate.
+           """
+    1:     def __init__(self, aux_transform):
+               self.aux_transform = aux_transform
+               super().__init__()
+               self.offset_transform = mtransforms.Affine2D()
+               # ref_offset_transform makes offset_transform always relative to the
+               # lower-left corner of the bbox of its children.
+               self.ref_offset_transform = mtransforms.Affine2D()
+       
+    1:     def add_artist(self, a):
+               """Add an `.Artist` to the container box."""
+               self._children.append(a)
+               a.set_transform(self.get_transform())
+               self.stale = True
+       
+    1:     def get_transform(self):
+               """
+               Return the :class:`~matplotlib.transforms.Transform` applied
+               to the children
+               """
+               return (self.aux_transform
+                       + self.ref_offset_transform
+                       + self.offset_transform)
+       
+    1:     def set_transform(self, t):
+               """
+               set_transform is ignored.
+               """
+       
+    1:     def set_offset(self, xy):
+               """
+               Set the offset of the container.
+       
+               Parameters
+               ----------
+               xy : (float, float)
+                   The (x, y) coordinates of the offset in display units.
+               """
+               self._offset = xy
+               self.offset_transform.clear()
+               self.offset_transform.translate(xy[0], xy[1])
+               self.stale = True
+       
+    1:     def get_offset(self):
+               """Return offset of the container."""
+               return self._offset
+       
+    1:     def get_bbox(self, renderer):
+               # clear the offset transforms
+               _off = self.offset_transform.get_matrix()  # to be restored later
+               self.ref_offset_transform.clear()
+               self.offset_transform.clear()
+               # calculate the extent
+               bboxes = [c.get_window_extent(renderer) for c in self._children]
+               ub = Bbox.union(bboxes)
+               # adjust ref_offset_transform
+               self.ref_offset_transform.translate(-ub.x0, -ub.y0)
+               # restore offset transform
+               self.offset_transform.set_matrix(_off)
+               return Bbox.from_bounds(0, 0, ub.width, ub.height)
+       
+    1:     def draw(self, renderer):
+               # docstring inherited
+               for c in self._children:
+                   c.draw(renderer)
+               _bbox_artist(self, renderer, fill=False, props=dict(pad=0.))
+               self.stale = False
+       
+       
+    2: class AnchoredOffsetbox(OffsetBox):
+    1:     """
+           An offset box placed according to location *loc*.
+       
+           AnchoredOffsetbox has a single child.  When multiple children are needed,
+           use an extra OffsetBox to enclose them.  By default, the offset box is
+           anchored against its parent Axes. You may explicitly specify the
+           *bbox_to_anchor*.
+           """
+    1:     zorder = 5  # zorder of the legend
+       
+           # Location codes
+    2:     codes = {'upper right': 1,
+    1:              'upper left': 2,
+    1:              'lower left': 3,
+    1:              'lower right': 4,
+    1:              'right': 5,
+    1:              'center left': 6,
+    1:              'center right': 7,
+    1:              'lower center': 8,
+    1:              'upper center': 9,
+    1:              'center': 10,
+                    }
+       
+    1:     def __init__(self, loc, *,
+    1:                  pad=0.4, borderpad=0.5,
+    1:                  child=None, prop=None, frameon=True,
+    1:                  bbox_to_anchor=None,
+    1:                  bbox_transform=None,
+                        **kwargs):
+               """
+               Parameters
+               ----------
+               loc : str
+                   The box location.  Valid locations are
+                   'upper left', 'upper center', 'upper right',
+                   'center left', 'center', 'center right',
+                   'lower left', 'lower center', 'lower right'.
+                   For backward compatibility, numeric values are accepted as well.
+                   See the parameter *loc* of `.Legend` for details.
+               pad : float, default: 0.4
+                   Padding around the child as fraction of the fontsize.
+               borderpad : float, default: 0.5
+                   Padding between the offsetbox frame and the *bbox_to_anchor*.
+               child : `.OffsetBox`
+                   The box that will be anchored.
+               prop : `.FontProperties`
+                   This is only used as a reference for paddings. If not given,
+                   :rc:`legend.fontsize` is used.
+               frameon : bool
+                   Whether to draw a frame around the box.
+               bbox_to_anchor : `.BboxBase`, 2-tuple, or 4-tuple of floats
+                   Box that is used to position the legend in conjunction with *loc*.
+               bbox_transform : None or :class:`matplotlib.transforms.Transform`
+                   The transform for the bounding box (*bbox_to_anchor*).
+               **kwargs
+                   All other parameters are passed on to `.OffsetBox`.
+       
+               Notes
+               -----
+               See `.Legend` for a detailed description of the anchoring mechanism.
+               """
+               super().__init__(**kwargs)
+       
+               self.set_bbox_to_anchor(bbox_to_anchor, bbox_transform)
+               self.set_child(child)
+       
+               if isinstance(loc, str):
+                   loc = _api.check_getitem(self.codes, loc=loc)
+       
+               self.loc = loc
+               self.borderpad = borderpad
+               self.pad = pad
+       
+               if prop is None:
+                   self.prop = FontProperties(size=mpl.rcParams["legend.fontsize"])
+               else:
+                   self.prop = FontProperties._from_any(prop)
+                   if isinstance(prop, dict) and "size" not in prop:
+                       self.prop.set_size(mpl.rcParams["legend.fontsize"])
+       
+               self.patch = FancyBboxPatch(
+                   xy=(0.0, 0.0), width=1., height=1.,
+                   facecolor='w', edgecolor='k',
+                   mutation_scale=self.prop.get_size_in_points(),
+                   snap=True,
+                   visible=frameon,
+                   boxstyle="square,pad=0",
+               )
+       
+    1:     def set_child(self, child):
+               """Set the child to be anchored."""
+               self._child = child
+               if child is not None:
+                   child.axes = self.axes
+               self.stale = True
+       
+    1:     def get_child(self):
+               """Return the child."""
+               return self._child
+       
+    1:     def get_children(self):
+               """Return the list of children."""
+               return [self._child]
+       
+    1:     def get_bbox(self, renderer):
+               # docstring inherited
+               fontsize = renderer.points_to_pixels(self.prop.get_size_in_points())
+               pad = self.pad * fontsize
+               return self.get_child().get_bbox(renderer).padded(pad)
+       
+    1:     def get_bbox_to_anchor(self):
+               """Return the bbox that the box is anchored to."""
+               if self._bbox_to_anchor is None:
+                   return self.axes.bbox
+               else:
+                   transform = self._bbox_to_anchor_transform
+                   if transform is None:
+                       return self._bbox_to_anchor
+                   else:
+                       return TransformedBbox(self._bbox_to_anchor, transform)
+       
+    1:     def set_bbox_to_anchor(self, bbox, transform=None):
+               """
+               Set the bbox that the box is anchored to.
+       
+               *bbox* can be a Bbox instance, a list of [left, bottom, width,
+               height], or a list of [left, bottom] where the width and
+               height will be assumed to be zero. The bbox will be
+               transformed to display coordinate by the given transform.
+               """
+               if bbox is None or isinstance(bbox, BboxBase):
+                   self._bbox_to_anchor = bbox
+               else:
+                   try:
+                       l = len(bbox)
+                   except TypeError as err:
+                       raise ValueError(f"Invalid bbox: {bbox}") from err
+       
+                   if l == 2:
+                       bbox = [bbox[0], bbox[1], 0, 0]
+       
+                   self._bbox_to_anchor = Bbox.from_bounds(*bbox)
+       
+               self._bbox_to_anchor_transform = transform
+               self.stale = True
+       
+    2:     @_compat_get_offset
+    2:     def get_offset(self, bbox, renderer):
+               # docstring inherited
+               pad = (self.borderpad
+                      * renderer.points_to_pixels(self.prop.get_size_in_points()))
+               bbox_to_anchor = self.get_bbox_to_anchor()
+               x0, y0 = _get_anchored_bbox(
+                   self.loc, Bbox.from_bounds(0, 0, bbox.width, bbox.height),
+                   bbox_to_anchor, pad)
+               return x0 - bbox.x0, y0 - bbox.y0
+       
+    1:     def update_frame(self, bbox, fontsize=None):
+               self.patch.set_bounds(bbox.bounds)
+               if fontsize:
+                   self.patch.set_mutation_scale(fontsize)
+       
+    1:     def draw(self, renderer):
+               # docstring inherited
+               if not self.get_visible():
+                   return
+       
+               # update the location and size of the legend
+               bbox = self.get_window_extent(renderer)
+               fontsize = renderer.points_to_pixels(self.prop.get_size_in_points())
+               self.update_frame(bbox, fontsize)
+               self.patch.draw(renderer)
+       
+               px, py = self.get_offset(self.get_bbox(renderer), renderer)
+               self.get_child().set_offset((px, py))
+               self.get_child().draw(renderer)
+               self.stale = False
+       
+       
+    1: def _get_anchored_bbox(loc, bbox, parentbbox, borderpad):
+           """
+           Return the (x, y) position of the *bbox* anchored at the *parentbbox* with
+           the *loc* code with the *borderpad*.
+           """
+           # This is only called internally and *loc* should already have been
+           # validated.  If 0 (None), we just let ``bbox.anchored`` raise.
+   11:     c = [None, "NE", "NW", "SW", "SE", "E", "W", "E", "S", "N", "C"][loc]
+   11:     container = parentbbox.padded(-borderpad)
+   11:     return bbox.anchored(c, container=container).p0
+       
+       
+    2: class AnchoredText(AnchoredOffsetbox):
+    1:     """
+           AnchoredOffsetbox with Text.
+           """
+       
+    1:     def __init__(self, s, loc, *, pad=0.4, borderpad=0.5, prop=None, **kwargs):
+               """
+               Parameters
+               ----------
+               s : str
+                   Text.
+       
+               loc : str
+                   Location code. See `AnchoredOffsetbox`.
+       
+               pad : float, default: 0.4
+                   Padding around the text as fraction of the fontsize.
+       
+               borderpad : float, default: 0.5
+                   Spacing between the offsetbox frame and the *bbox_to_anchor*.
+       
+               prop : dict, optional
+                   Dictionary of keyword parameters to be passed to the
+                   `~matplotlib.text.Text` instance contained inside AnchoredText.
+       
+               **kwargs
+                   All other parameters are passed to `AnchoredOffsetbox`.
+               """
+       
+               if prop is None:
+                   prop = {}
+               badkwargs = {'va', 'verticalalignment'}
+               if badkwargs & set(prop):
+                   raise ValueError(
+                       'Mixing verticalalignment with AnchoredText is not supported.')
+       
+               self.txt = TextArea(s, textprops=prop)
+               fp = self.txt._text.get_fontproperties()
+               super().__init__(
+                   loc, pad=pad, borderpad=borderpad, child=self.txt, prop=fp,
+                   **kwargs)
+       
+       
+    2: class OffsetImage(OffsetBox):
+       
+    1:     def __init__(self, arr, *,
+    1:                  zoom=1,
+    1:                  cmap=None,
+    1:                  norm=None,
+    1:                  interpolation=None,
+    1:                  origin=None,
+    1:                  filternorm=True,
+    1:                  filterrad=4.0,
+    1:                  resample=False,
+    1:                  dpi_cor=True,
+                        **kwargs
+                        ):
+       
+               super().__init__()
+               self._dpi_cor = dpi_cor
+       
+               self.image = BboxImage(bbox=self.get_window_extent,
+                                      cmap=cmap,
+                                      norm=norm,
+                                      interpolation=interpolation,
+                                      origin=origin,
+                                      filternorm=filternorm,
+                                      filterrad=filterrad,
+                                      resample=resample,
+                                      **kwargs
+                                      )
+       
+               self._children = [self.image]
+       
+               self.set_zoom(zoom)
+               self.set_data(arr)
+       
+    1:     def set_data(self, arr):
+               self._data = np.asarray(arr)
+               self.image.set_data(self._data)
+               self.stale = True
+       
+    1:     def get_data(self):
+               return self._data
+       
+    1:     def set_zoom(self, zoom):
+               self._zoom = zoom
+               self.stale = True
+       
+    1:     def get_zoom(self):
+               return self._zoom
+       
+    1:     def get_offset(self):
+               """Return offset of the container."""
+               return self._offset
+       
+    1:     def get_children(self):
+               return [self.image]
+       
+    1:     def get_bbox(self, renderer):
+               dpi_cor = renderer.points_to_pixels(1.) if self._dpi_cor else 1.
+               zoom = self.get_zoom()
+               data = self.get_data()
+               ny, nx = data.shape[:2]
+               w, h = dpi_cor * nx * zoom, dpi_cor * ny * zoom
+               return Bbox.from_bounds(0, 0, w, h)
+       
+    1:     def draw(self, renderer):
+               # docstring inherited
+               self.image.draw(renderer)
+               # bbox_artist(self, renderer, fill=False, props=dict(pad=0.))
+               self.stale = False
+       
+       
+    2: class AnnotationBbox(martist.Artist, mtext._AnnotationBase):
+    1:     """
+           Container for an `OffsetBox` referring to a specific position *xy*.
+       
+           Optionally an arrow pointing from the offsetbox to *xy* can be drawn.
+       
+           This is like `.Annotation`, but with `OffsetBox` instead of `.Text`.
+           """
+       
+    1:     zorder = 3
+       
+    1:     def __str__(self):
+               return f"AnnotationBbox({self.xy[0]:g},{self.xy[1]:g})"
+       
+    2:     @_docstring.interpd
+    3:     def __init__(self, offsetbox, xy, xybox=None, xycoords='data', boxcoords=None, *,
+    1:                  frameon=True, pad=0.4,  # FancyBboxPatch boxstyle.
+    1:                  annotation_clip=None,
+    1:                  box_alignment=(0.5, 0.5),
+    1:                  bboxprops=None,
+    1:                  arrowprops=None,
+    1:                  fontsize=None,
+                        **kwargs):
+               """
+               Parameters
+               ----------
+               offsetbox : `OffsetBox`
+       
+               xy : (float, float)
+                   The point *(x, y)* to annotate. The coordinate system is determined
+                   by *xycoords*.
+       
+               xybox : (float, float), default: *xy*
+                   The position *(x, y)* to place the text at. The coordinate system
+                   is determined by *boxcoords*.
+       
+               xycoords : single or two-tuple of str or `.Artist` or `.Transform` or \
+       callable, default: 'data'
+                   The coordinate system that *xy* is given in. See the parameter
+                   *xycoords* in `.Annotation` for a detailed description.
+       
+               boxcoords : single or two-tuple of str or `.Artist` or `.Transform` \
+       or callable, default: value of *xycoords*
+                   The coordinate system that *xybox* is given in. See the parameter
+                   *textcoords* in `.Annotation` for a detailed description.
+       
+               frameon : bool, default: True
+                   By default, the text is surrounded by a white `.FancyBboxPatch`
+                   (accessible as the ``patch`` attribute of the `.AnnotationBbox`).
+                   If *frameon* is set to False, this patch is made invisible.
+       
+               annotation_clip: bool or None, default: None
+                   Whether to clip (i.e. not draw) the annotation when the annotation
+                   point *xy* is outside the Axes area.
+       
+                   - If *True*, the annotation will be clipped when *xy* is outside
+                     the Axes.
+                   - If *False*, the annotation will always be drawn.
+                   - If *None*, the annotation will be clipped when *xy* is outside
+                     the Axes and *xycoords* is 'data'.
+       
+               pad : float, default: 0.4
+                   Padding around the offsetbox.
+       
+               box_alignment : (float, float)
+                   A tuple of two floats for a vertical and horizontal alignment of
+                   the offset box w.r.t. the *boxcoords*.
+                   The lower-left corner is (0, 0) and upper-right corner is (1, 1).
+       
+               bboxprops : dict, optional
+                   A dictionary of properties to set for the annotation bounding box,
+                   for example *boxstyle* and *alpha*.  See `.FancyBboxPatch` for
+                   details.
+       
+               arrowprops: dict, optional
+                   Arrow properties, see `.Annotation` for description.
+       
+               fontsize: float or str, optional
+                   Translated to points and passed as *mutation_scale* into
+                   `.FancyBboxPatch` to scale attributes of the box style (e.g. pad
+                   or rounding_size).  The name is chosen in analogy to `.Text` where
+                   *fontsize* defines the mutation scale as well.  If not given,
+                   :rc:`legend.fontsize` is used.  See `.Text.set_fontsize` for valid
+                   values.
+       
+               **kwargs
+                   Other `AnnotationBbox` properties.  See `.AnnotationBbox.set` for
+                   a list.
+               """
+       
+               martist.Artist.__init__(self)
+               mtext._AnnotationBase.__init__(
+                   self, xy, xycoords=xycoords, annotation_clip=annotation_clip)
+       
+               self.offsetbox = offsetbox
+               self.arrowprops = arrowprops.copy() if arrowprops is not None else None
+               self.set_fontsize(fontsize)
+               self.xybox = xybox if xybox is not None else xy
+               self.boxcoords = boxcoords if boxcoords is not None else xycoords
+               self._box_alignment = box_alignment
+       
+               if arrowprops is not None:
+                   self._arrow_relpos = self.arrowprops.pop("relpos", (0.5, 0.5))
+                   self.arrow_patch = FancyArrowPatch((0, 0), (1, 1),
+                                                      **self.arrowprops)
+               else:
+                   self._arrow_relpos = None
+                   self.arrow_patch = None
+       
+               self.patch = FancyBboxPatch(  # frame
+                   xy=(0.0, 0.0), width=1., height=1.,
+                   facecolor='w', edgecolor='k',
+                   mutation_scale=self.prop.get_size_in_points(),
+                   snap=True,
+                   visible=frameon,
+               )
+               self.patch.set_boxstyle("square", pad=pad)
+               if bboxprops:
+                   self.patch.set(**bboxprops)
+       
+               self._internal_update(kwargs)
+       
+    2:     @property
+    2:     def xyann(self):
+               return self.xybox
+       
+    2:     @xyann.setter
+    2:     def xyann(self, xyann):
+               self.xybox = xyann
+               self.stale = True
+       
+    2:     @property
+    2:     def anncoords(self):
+               return self.boxcoords
+       
+    2:     @anncoords.setter
+    2:     def anncoords(self, coords):
+               self.boxcoords = coords
+               self.stale = True
+       
+    1:     def contains(self, mouseevent):
+               if self._different_canvas(mouseevent):
+                   return False, {}
+               if not self._check_xy(None):
+                   return False, {}
+               return self.offsetbox.contains(mouseevent)
+               # self.arrow_patch is currently not checked as this can be a line - JJ
+       
+    1:     def get_children(self):
+               children = [self.offsetbox, self.patch]
+               if self.arrow_patch:
+                   children.append(self.arrow_patch)
+               return children
+       
+    1:     def set_figure(self, fig):
+               if self.arrow_patch is not None:
+                   self.arrow_patch.set_figure(fig)
+               self.offsetbox.set_figure(fig)
+               martist.Artist.set_figure(self, fig)
+       
+    1:     def set_fontsize(self, s=None):
+               """
+               Set the fontsize in points.
+       
+               If *s* is not given, reset to :rc:`legend.fontsize`.
+               """
+               if s is None:
+                   s = mpl.rcParams["legend.fontsize"]
+       
+               self.prop = FontProperties(size=s)
+               self.stale = True
+       
+    1:     def get_fontsize(self):
+               """Return the fontsize in points."""
+               return self.prop.get_size_in_points()
+       
+    1:     def get_window_extent(self, renderer=None):
+               # docstring inherited
+               if renderer is None:
+                   renderer = self.get_figure(root=True)._get_renderer()
+               self.update_positions(renderer)
+               return Bbox.union([child.get_window_extent(renderer)
+                                  for child in self.get_children()])
+       
+    1:     def get_tightbbox(self, renderer=None):
+               # docstring inherited
+               if renderer is None:
+                   renderer = self.get_figure(root=True)._get_renderer()
+               self.update_positions(renderer)
+               return Bbox.union([child.get_tightbbox(renderer)
+                                  for child in self.get_children()])
+       
+    1:     def update_positions(self, renderer):
+               """Update pixel positions for the annotated point, the text, and the arrow."""
+       
+               ox0, oy0 = self._get_xy(renderer, self.xybox, self.boxcoords)
+               bbox = self.offsetbox.get_bbox(renderer)
+               fw, fh = self._box_alignment
+               self.offsetbox.set_offset(
+                   (ox0 - fw*bbox.width - bbox.x0, oy0 - fh*bbox.height - bbox.y0))
+       
+               bbox = self.offsetbox.get_window_extent(renderer)
+               self.patch.set_bounds(bbox.bounds)
+       
+               mutation_scale = renderer.points_to_pixels(self.get_fontsize())
+               self.patch.set_mutation_scale(mutation_scale)
+       
+               if self.arrowprops:
+                   # Use FancyArrowPatch if self.arrowprops has "arrowstyle" key.
+       
+                   # Adjust the starting point of the arrow relative to the textbox.
+                   # TODO: Rotation needs to be accounted.
+                   arrow_begin = bbox.p0 + bbox.size * self._arrow_relpos
+                   arrow_end = self._get_position_xy(renderer)
+                   # The arrow (from arrow_begin to arrow_end) will be first clipped
+                   # by patchA and patchB, then shrunk by shrinkA and shrinkB (in
+                   # points).  If patch A is not set, self.bbox_patch is used.
+                   self.arrow_patch.set_positions(arrow_begin, arrow_end)
+       
+                   if "mutation_scale" in self.arrowprops:
+                       mutation_scale = renderer.points_to_pixels(
+                           self.arrowprops["mutation_scale"])
+                       # Else, use fontsize-based mutation_scale defined above.
+                   self.arrow_patch.set_mutation_scale(mutation_scale)
+       
+                   patchA = self.arrowprops.get("patchA", self.patch)
+                   self.arrow_patch.set_patchA(patchA)
+       
+    1:     def draw(self, renderer):
+               # docstring inherited
+               if not self.get_visible() or not self._check_xy(renderer):
+                   return
+               renderer.open_group(self.__class__.__name__, gid=self.get_gid())
+               self.update_positions(renderer)
+               if self.arrow_patch is not None:
+                   if (self.arrow_patch.get_figure(root=False) is None and
+                           (fig := self.get_figure(root=False)) is not None):
+                       self.arrow_patch.set_figure(fig)
+                   self.arrow_patch.draw(renderer)
+               self.patch.draw(renderer)
+               self.offsetbox.draw(renderer)
+               renderer.close_group(self.__class__.__name__)
+               self.stale = False
+       
+       
+    2: class DraggableBase:
+    1:     """
+           Helper base class for a draggable artist (legend, offsetbox).
+       
+           Derived classes must override the following methods::
+       
+               def save_offset(self):
+                   '''
+                   Called when the object is picked for dragging; should save the
+                   reference position of the artist.
+                   '''
+       
+               def update_offset(self, dx, dy):
+                   '''
+                   Called during the dragging; (*dx*, *dy*) is the pixel offset from
+                   the point where the mouse drag started.
+                   '''
+       
+           Optionally, you may override the following method::
+       
+               def finalize_offset(self):
+                   '''Called when the mouse is released.'''
+       
+           In the current implementation of `.DraggableLegend` and
+           `DraggableAnnotation`, `update_offset` places the artists in display
+           coordinates, and `finalize_offset` recalculates their position in axes
+           coordinate and set a relevant attribute.
+           """
+       
+    1:     def __init__(self, ref_artist, use_blit=False):
+               self.ref_artist = ref_artist
+               if not ref_artist.pickable():
+                   ref_artist.set_picker(True)
+               self.got_artist = False
+               self._use_blit = use_blit and self.canvas.supports_blit
+               callbacks = self.canvas.callbacks
+               self._disconnectors = [
+                   functools.partial(
+                       callbacks.disconnect, callbacks._connect_picklable(name, func))
+                   for name, func in [
+                       ("pick_event", self.on_pick),
+                       ("button_release_event", self.on_release),
+                       ("motion_notify_event", self.on_motion),
+                   ]
+               ]
+       
+           # A property, not an attribute, to maintain picklability.
+    1:     canvas = property(lambda self: self.ref_artist.get_figure(root=True).canvas)
+    1:     cids = property(lambda self: [
+               disconnect.args[0] for disconnect in self._disconnectors[:2]])
+       
+    1:     def on_motion(self, evt):
+               if self._check_still_parented() and self.got_artist:
+                   dx = evt.x - self.mouse_x
+                   dy = evt.y - self.mouse_y
+                   self.update_offset(dx, dy)
+                   if self._use_blit:
+                       self.canvas.restore_region(self.background)
+                       self.ref_artist.draw(
+                           self.ref_artist.get_figure(root=True)._get_renderer())
+                       self.canvas.blit()
+                   else:
+                       self.canvas.draw()
+       
+    1:     def on_pick(self, evt):
+               if self._check_still_parented():
+                   if evt.artist == self.ref_artist:
+                       self.mouse_x = evt.mouseevent.x
+                       self.mouse_y = evt.mouseevent.y
+                       self.save_offset()
+                       self.got_artist = True
+                   if self.got_artist and self._use_blit:
+                       self.ref_artist.set_animated(True)
+                       self.canvas.draw()
+                       fig = self.ref_artist.get_figure(root=False)
+                       self.background = self.canvas.copy_from_bbox(fig.bbox)
+                       self.ref_artist.draw(fig._get_renderer())
+                       self.canvas.blit()
+       
+    1:     def on_release(self, event):
+               if self._check_still_parented() and self.got_artist:
+                   self.finalize_offset()
+                   self.got_artist = False
+                   if self._use_blit:
+                       self.canvas.restore_region(self.background)
+                       self.ref_artist.draw(self.ref_artist.figure._get_renderer())
+                       self.canvas.blit()
+                       self.ref_artist.set_animated(False)
+       
+    1:     def _check_still_parented(self):
+               if self.ref_artist.get_figure(root=False) is None:
+                   self.disconnect()
+                   return False
+               else:
+                   return True
+       
+    1:     def disconnect(self):
+               """Disconnect the callbacks."""
+               for disconnector in self._disconnectors:
+                   disconnector()
+       
+    1:     def save_offset(self):
+               pass
+       
+    1:     def update_offset(self, dx, dy):
+               pass
+       
+    1:     def finalize_offset(self):
+               pass
+       
+       
+    2: class DraggableOffsetBox(DraggableBase):
+    1:     def __init__(self, ref_artist, offsetbox, use_blit=False):
+               super().__init__(ref_artist, use_blit=use_blit)
+               self.offsetbox = offsetbox
+       
+    1:     def save_offset(self):
+               offsetbox = self.offsetbox
+               renderer = offsetbox.get_figure(root=True)._get_renderer()
+               offset = offsetbox.get_offset(offsetbox.get_bbox(renderer), renderer)
+               self.offsetbox_x, self.offsetbox_y = offset
+               self.offsetbox.set_offset(offset)
+       
+    1:     def update_offset(self, dx, dy):
+               loc_in_canvas = self.offsetbox_x + dx, self.offsetbox_y + dy
+               self.offsetbox.set_offset(loc_in_canvas)
+       
+    1:     def get_loc_in_canvas(self):
+               offsetbox = self.offsetbox
+               renderer = offsetbox.get_figure(root=True)._get_renderer()
+               bbox = offsetbox.get_bbox(renderer)
+               ox, oy = offsetbox._offset
+               loc_in_canvas = (ox + bbox.x0, oy + bbox.y0)
+               return loc_in_canvas
+       
+       
+    2: class DraggableAnnotation(DraggableBase):
+    1:     def __init__(self, annotation, use_blit=False):
+               super().__init__(annotation, use_blit=use_blit)
+               self.annotation = annotation
+       
+    1:     def save_offset(self):
+               ann = self.annotation
+               self.ox, self.oy = ann.get_transform().transform(ann.xyann)
+       
+    1:     def update_offset(self, dx, dy):
+               ann = self.annotation
+               ann.xyann = ann.get_transform().inverted().transform(
+                   (self.ox + dx, self.oy + dy))

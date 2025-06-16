@@ -1,0 +1,80 @@
+    1: from collections import defaultdict
+       
+       
+    2: class DuplicatedNameError(NameError):
+    1:     pass
+       
+       
+    2: class NameScope(object):
+    1:     def __init__(self):
+  434:         self._useset = set([''])
+  434:         self._basenamemap = defaultdict(int)
+       
+    1:     def is_used(self, name):
+24318:         return name in self._useset
+       
+    1:     def register(self, name, deduplicate=False):
+13223:         if deduplicate:
+12665:             name = self.deduplicate(name)
+  558:         elif self.is_used(name):
+                   raise DuplicatedNameError(name)
+13223:         self._useset.add(name)
+13223:         return name
+       
+    1:     def deduplicate(self, name):
+12831:         basename = name
+23760:         while self.is_used(name):
+10929:             ident = self._basenamemap[basename] + 1
+10929:             self._basenamemap[basename] = ident
+10929:             name = "{0}.{1}".format(basename, ident)
+12831:         return name
+       
+    1:     def get_child(self):
+               return type(self)(parent=self)
+       
+       
+    2: class _StrCaching(object):
+       
+    1:     def _clear_string_cache(self):
+               try:
+                   del self.__cached_str
+               except AttributeError:
+                   pass
+       
+    1:     def __str__(self):
+35698:         try:
+35698:             return self.__cached_str
+13801:         except AttributeError:
+13801:             s = self.__cached_str = self._to_string()
+13801:             return s
+       
+       
+    2: class _StringReferenceCaching(object):
+       
+    1:     def get_reference(self):
+26844:         try:
+26844:             return self.__cached_refstr
+14071:         except AttributeError:
+14071:             s = self.__cached_refstr = self._get_reference()
+14071:             return s
+       
+       
+    2: class _HasMetadata(object):
+       
+    1:     def set_metadata(self, name, node):
+               """
+               Attach unnamed metadata *node* to the metadata slot *name* of this
+               value.
+               """
+  378:         self.metadata[name] = node
+       
+    1:     def _stringify_metadata(self, leading_comma=False):
+ 9715:         if self.metadata:
+  378:             buf = []
+  378:             if leading_comma:
+  378:                 buf.append("")
+ 1890:             buf += ["!{0} {1}".format(k, v.get_reference())
+  756:                     for k, v in self.metadata.items()]
+  378:             return ', '.join(buf)
+               else:
+ 9337:             return ''

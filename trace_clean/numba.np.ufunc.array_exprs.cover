@@ -1,0 +1,428 @@
+    1: import ast
+    1: from collections import defaultdict, OrderedDict
+    1: import contextlib
+    1: import sys
+    1: from types import SimpleNamespace
+       
+    1: import numpy as np
+    1: import operator
+       
+    1: from numba.core import types, targetconfig, ir, rewrites, compiler
+    1: from numba.core.typing import npydecl
+    1: from numba.np.ufunc.dufunc import DUFunc
+       
+       
+    1: def _is_ufunc(func):
+   10:     return isinstance(func, (np.ufunc, DUFunc))
+       
+       
+    3: @rewrites.register_rewrite('after-inference')
+    2: class RewriteArrayExprs(rewrites.Rewrite):
+    1:     '''The RewriteArrayExprs class is responsible for finding array
+           expressions in Numba intermediate representation code, and
+           rewriting those expressions to a single operation that will expand
+           into something similar to a ufunc call.
+           '''
+    1:     def __init__(self, state, *args, **kws):
+   24:         super(RewriteArrayExprs, self).__init__(state, *args, **kws)
+               # Install a lowering hook if we are using this rewrite.
+   24:         special_ops = state.targetctx.special_ops
+   24:         if 'arrayexpr' not in special_ops:
+    1:             special_ops['arrayexpr'] = _lower_array_expr
+       
+    1:     def match(self, func_ir, block, typemap, calltypes):
+               """
+               Using typing and a basic block, search the basic block for array
+               expressions.
+               Return True when one or more matches were found, False otherwise.
+               """
+               # We can trivially reject everything if there are no
+               # calls in the type results.
+   99:         if len(calltypes) == 0:
+    1:             return False
+       
+   98:         self.crnt_block = block
+   98:         self.typemap = typemap
+               # { variable name: IR assignment (of a function call or operator) }
+   98:         self.array_assigns = OrderedDict()
+               # { variable name: IR assignment (of a constant) }
+   98:         self.const_assigns = {}
+       
+   98:         assignments = block.find_insts(ir.Assign)
+  707:         for instr in assignments:
+  609:             target_name = instr.target.name
+  609:             expr = instr.value
+                   # Does it assign an expression to an array variable?
+  936:             if (isinstance(expr, ir.Expr) and
+  327:                 isinstance(typemap.get(target_name, None), types.Array)):
+   28:                 self._match_array_expr(instr, expr, target_name)
+  581:             elif isinstance(expr, ir.Const):
+                       # Track constants since we might need them for an
+                       # array expression.
+   56:                 self.const_assigns[target_name] = expr
+       
+   98:         return len(self.array_assigns) > 0
+       
+    1:     def _match_array_expr(self, instr, expr, target_name):
+               """
+               Find whether the given assignment (*instr*) of an expression (*expr*)
+               to variable *target_name* is an array expression.
+               """
+               # We've matched a subexpression assignment to an
+               # array variable.  Now see if the expression is an
+               # array expression.
+   28:         expr_op = expr.op
+   28:         array_assigns = self.array_assigns
+       
+   28:         if ((expr_op in ('unary', 'binop')) and (
+    4:                 expr.fn in npydecl.supported_array_operators)):
+                   # It is an array operator that maps to a ufunc.
+                   # check that all args have internal types
+   28:             if all(self.typemap[var.name].is_internal
+   12:                    for var in expr.list_vars()):
+    4:                 array_assigns[target_name] = instr
+       
+   24:         elif ((expr_op == 'call') and (expr.func.name in self.typemap)):
+                   # It could be a match for a known ufunc call.
+   10:             func_type = self.typemap[expr.func.name]
+   10:             if isinstance(func_type, types.Function):
+   10:                 func_key = func_type.typing_key
+   10:                 if _is_ufunc(func_key):
+                           # If so, check whether an explicit output is passed.
+                           if not self._has_explicit_output(expr, func_key):
+                               # If not, match it as a (sub)expression.
+                               array_assigns[target_name] = instr
+       
+    1:     def _has_explicit_output(self, expr, func):
+               """
+               Return whether the *expr* call to *func* (a ufunc) features an
+               explicit output argument.
+               """
+               nargs = len(expr.args) + len(expr.kws)
+               if expr.vararg is not None:
+                   # XXX *args unsupported here, assume there may be an explicit
+                   # output
+                   return True
+               return nargs > func.nin
+       
+    1:     def _get_array_operator(self, ir_expr):
+    4:         ir_op = ir_expr.op
+    4:         if ir_op in ('unary', 'binop'):
+    4:             return ir_expr.fn
+               elif ir_op == 'call':
+                   return self.typemap[ir_expr.func.name].typing_key
+               raise NotImplementedError(
+                   "Don't know how to find the operator for '{0}' expressions.".format(
+                       ir_op))
+       
+    1:     def _get_operands(self, ir_expr):
+               '''Given a Numba IR expression, return the operands to the expression
+               in order they appear in the expression.
+               '''
+    4:         ir_op = ir_expr.op
+    4:         if ir_op == 'binop':
+    4:             return ir_expr.lhs, ir_expr.rhs
+               elif ir_op == 'unary':
+                   return ir_expr.list_vars()
+               elif ir_op == 'call':
+                   return ir_expr.args
+               raise NotImplementedError(
+                   "Don't know how to find the operands for '{0}' expressions.".format(
+                       ir_op))
+       
+    1:     def _translate_expr(self, ir_expr):
+               '''Translate the given expression from Numba IR to an array expression
+               tree.
+               '''
+               ir_op = ir_expr.op
+               if ir_op == 'arrayexpr':
+                   return ir_expr.expr
+               operands_or_args = [self.const_assigns.get(op_var.name, op_var)
+                                   for op_var in self._get_operands(ir_expr)]
+               return self._get_array_operator(ir_expr), operands_or_args
+       
+    1:     def _handle_matches(self):
+               '''Iterate over the matches, trying to find which instructions should
+               be rewritten, deleted, or moved.
+               '''
+    4:         replace_map = {}
+    4:         dead_vars = set()
+    4:         used_vars = defaultdict(int)
+    8:         for instr in self.array_assigns.values():
+    4:             expr = instr.value
+    4:             arr_inps = []
+    4:             arr_expr = self._get_array_operator(expr), arr_inps
+    8:             new_expr = ir.Expr(op='arrayexpr',
+    4:                                loc=expr.loc,
+    4:                                expr=arr_expr,
+    4:                                ty=self.typemap[instr.target.name])
+    4:             new_instr = ir.Assign(new_expr, instr.target, instr.loc)
+    4:             replace_map[instr] = new_instr
+    4:             self.array_assigns[instr.target.name] = new_instr
+   12:             for operand in self._get_operands(expr):
+    8:                 operand_name = operand.name
+    8:                 if operand.is_temp and operand_name in self.array_assigns:
+                           child_assign = self.array_assigns[operand_name]
+                           child_expr = child_assign.value
+                           child_operands = child_expr.list_vars()
+                           for operand in child_operands:
+                               used_vars[operand.name] += 1
+                           arr_inps.append(self._translate_expr(child_expr))
+                           if child_assign.target.is_temp:
+                               dead_vars.add(child_assign.target.name)
+                               replace_map[child_assign] = None
+    8:                 elif operand_name in self.const_assigns:
+                           arr_inps.append(self.const_assigns[operand_name])
+                       else:
+    8:                     used_vars[operand.name] += 1
+    8:                     arr_inps.append(operand)
+    4:         return replace_map, dead_vars, used_vars
+       
+    1:     def _get_final_replacement(self, replacement_map, instr):
+               '''Find the final replacement instruction for a given initial
+               instruction by chasing instructions in a map from instructions
+               to replacement instructions.
+               '''
+    4:         replacement = replacement_map[instr]
+    4:         while replacement in replacement_map:
+                   replacement = replacement_map[replacement]
+    4:         return replacement
+       
+    1:     def apply(self):
+               '''When we've found array expressions in a basic block, rewrite that
+               block, returning a new, transformed block.
+               '''
+               # Part 1: Figure out what instructions should be rewritten
+               # based on the matches found.
+    4:         replace_map, dead_vars, used_vars = self._handle_matches()
+               # Part 2: Using the information above, rewrite the target
+               # basic block.
+    4:         result = self.crnt_block.copy()
+    4:         result.clear()
+    4:         delete_map = {}
+  118:         for instr in self.crnt_block.body:
+  114:             if isinstance(instr, ir.Assign):
+   50:                 if instr in replace_map:
+    8:                     replacement = self._get_final_replacement(
+    4:                         replace_map, instr)
+    4:                     if replacement:
+    4:                         result.append(replacement)
+   12:                         for var in replacement.value.list_vars():
+    8:                             var_name = var.name
+    8:                             if var_name in delete_map:
+                                       result.append(delete_map.pop(var_name))
+    8:                             if used_vars[var_name] > 0:
+    8:                                 used_vars[var_name] -= 1
+       
+                       else:
+   46:                     result.append(instr)
+   64:             elif isinstance(instr, ir.Del):
+   58:                 instr_value = instr.value
+   58:                 if used_vars[instr_value] > 0:
+                           used_vars[instr_value] -= 1
+                           delete_map[instr_value] = instr
+   58:                 elif instr_value not in dead_vars:
+   58:                     result.append(instr)
+                   else:
+    6:                 result.append(instr)
+    4:         if delete_map:
+                   for instr in delete_map.values():
+                       result.insert_before_terminator(instr)
+    4:         return result
+       
+       
+    1: _unaryops = {
+    1:     operator.pos: ast.UAdd,
+    1:     operator.neg: ast.USub,
+    1:     operator.invert: ast.Invert,
+       }
+       
+    1: _binops = {
+    1:     operator.add: ast.Add,
+    1:     operator.sub: ast.Sub,
+    1:     operator.mul: ast.Mult,
+    1:     operator.truediv: ast.Div,
+    1:     operator.mod: ast.Mod,
+    1:     operator.or_: ast.BitOr,
+    1:     operator.rshift: ast.RShift,
+    1:     operator.xor: ast.BitXor,
+    1:     operator.lshift: ast.LShift,
+    1:     operator.and_: ast.BitAnd,
+    1:     operator.pow: ast.Pow,
+    1:     operator.floordiv: ast.FloorDiv,
+       }
+       
+       
+    1: _cmpops = {
+    1:     operator.eq: ast.Eq,
+    1:     operator.ne: ast.NotEq,
+    1:     operator.lt: ast.Lt,
+    1:     operator.le: ast.LtE,
+    1:     operator.gt: ast.Gt,
+    1:     operator.ge: ast.GtE,
+       }
+       
+       
+    1: def _arr_expr_to_ast(expr):
+           '''Build a Python expression AST from an array expression built by
+           RewriteArrayExprs.
+           '''
+   12:     if isinstance(expr, tuple):
+    4:         op, arr_expr_args = expr
+    4:         ast_args = []
+    4:         env = {}
+   12:         for arg in arr_expr_args:
+    8:             ast_arg, child_env = _arr_expr_to_ast(arg)
+    8:             ast_args.append(ast_arg)
+    8:             env.update(child_env)
+    4:         if op in npydecl.supported_array_operators:
+    4:             if len(ast_args) == 2:
+    4:                 if op in _binops:
+   12:                     return ast.BinOp(
+    8:                         ast_args[0], _binops[op](), ast_args[1]), env
+                       if op in _cmpops:
+                           return ast.Compare(
+                               ast_args[0], [_cmpops[op]()], [ast_args[1]]), env
+                   else:
+                       assert op in _unaryops
+                       return ast.UnaryOp(_unaryops[op](), ast_args[0]), env
+               elif _is_ufunc(op):
+                   fn_name = "__ufunc_or_dufunc_{0}".format(
+                       hex(hash(op)).replace("-", "_"))
+                   fn_ast_name = ast.Name(fn_name, ast.Load())
+                   env[fn_name] = op # Stash the ufunc or DUFunc in the environment
+                   ast_call = ast.Call(fn_ast_name, ast_args, [])
+                   return ast_call, env
+    8:     elif isinstance(expr, ir.Var):
+   24:         return ast.Name(expr.name, ast.Load(),
+    8:                         lineno=expr.loc.line,
+   16:                         col_offset=expr.loc.col if expr.loc.col else 0), {}
+           elif isinstance(expr, ir.Const):
+               return ast.Constant(expr.value), {}
+           raise NotImplementedError(
+               "Don't know how to translate array expression '%r'" % (expr,))
+       
+       
+    2: @contextlib.contextmanager
+    2: def _legalize_parameter_names(var_list):
+           """
+           Legalize names in the variable list for use as a Python function's
+           parameter names.
+           """
+    4:     var_map = OrderedDict()
+   12:     for var in var_list:
+    8:         old_name = var.name
+    8:         new_name = var.scope.redefine(old_name, loc=var.loc).name
+    8:         new_name = new_name.replace("$", "_").replace(".", "_")
+               # Caller should ensure the names are unique
+    8:         if new_name in var_map:
+                   raise AssertionError(f"{new_name!r} not unique")
+    8:         var_map[new_name] = var, old_name
+    8:         var.name = new_name
+    4:     param_names = list(var_map)
+    4:     try:
+    4:         yield param_names
+           finally:
+               # Make sure the old names are restored, to avoid confusing
+               # other parts of Numba (see issue #1466)
+   12:         for var, old_name in var_map.values():
+    8:             var.name = old_name
+       
+       
+    2: class _EraseInvalidLineRanges(ast.NodeTransformer):
+    1:     def generic_visit(self, node: ast.AST) -> ast.AST:
+   48:         node = super().generic_visit(node)
+   48:         if hasattr(node, "lineno"):
+   28:             if getattr(node, "end_lineno", None) is not None:
+   28:                 if node.lineno > node.end_lineno:
+    8:                     del node.lineno
+    8:                     del node.end_lineno
+   48:         return node
+       
+       
+    1: def _fix_invalid_lineno_ranges(astree: ast.AST):
+           """Inplace fixes invalid lineno ranges.
+           """
+           # Make sure lineno and end_lineno are present
+    4:     ast.fix_missing_locations(astree)
+           # Delete invalid lineno ranges
+    4:     _EraseInvalidLineRanges().visit(astree)
+           # Make sure lineno and end_lineno are present
+    4:     ast.fix_missing_locations(astree)
+       
+       
+    1: def _lower_array_expr(lowerer, expr):
+           '''Lower an array expression built by RewriteArrayExprs.
+           '''
+    4:     expr_name = "__numba_array_expr_%s" % (hex(hash(expr)).replace("-", "_"))
+    4:     expr_filename = expr.loc.filename
+    4:     expr_var_list = expr.list_vars()
+           # The expression may use a given variable several times, but we
+           # should only create one parameter for it.
+   12:     expr_var_unique = sorted(set(expr_var_list), key=lambda var: var.name)
+       
+           # Arguments are the names external to the new closure
+   16:     expr_args = [var.name for var in expr_var_unique]
+       
+           # 1. Create an AST tree from the array expression.
+    8:     with _legalize_parameter_names(expr_var_unique) as expr_params:
+   28:         ast_args = [ast.arg(param_name, None)
+   12:                     for param_name in expr_params]
+               # Parse a stub function to ensure the AST is populated with
+               # reasonable defaults for the Python version.
+    8:         ast_module = ast.parse('def {0}(): return'.format(expr_name),
+    4:                                expr_filename, 'exec')
+    4:         assert hasattr(ast_module, 'body') and len(ast_module.body) == 1
+    4:         ast_fn = ast_module.body[0]
+    4:         ast_fn.args.args = ast_args
+    4:         ast_fn.body[0].value, namespace = _arr_expr_to_ast(expr.expr)
+    4:         _fix_invalid_lineno_ranges(ast_module)
+       
+           # 2. Compile the AST module and extract the Python function.
+    4:     code_obj = compile(ast_module, expr_filename, 'exec')
+    4:     exec(code_obj, namespace)
+    4:     impl = namespace[expr_name]
+       
+           # 3. Now compile a ufunc using the Python function as kernel.
+       
+    4:     context = lowerer.context
+    4:     builder = lowerer.builder
+   16:     outer_sig = expr.ty(*(lowerer.typeof(name) for name in expr_args))
+    4:     inner_sig_args = []
+   12:     for argty in outer_sig.args:
+    8:         if isinstance(argty, types.Optional):
+                   argty = argty.type
+    8:         if isinstance(argty, types.Array):
+    4:             inner_sig_args.append(argty.dtype)
+               else:
+    4:             inner_sig_args.append(argty)
+    4:     inner_sig = outer_sig.return_type.dtype(*inner_sig_args)
+       
+    4:     flags = targetconfig.ConfigStack().top_or_none()
+    4:     flags = compiler.Flags() if flags is None else flags.copy() # make sure it's a clone or a fresh instance
+           # Follow the Numpy error model.  Note this also allows e.g. vectorizing
+           # division (issue #1223).
+    4:     flags.error_model = 'numpy'
+    8:     cres = context.compile_subroutine(builder, impl, inner_sig, flags=flags,
+    4:                                       caching=False)
+       
+           # Create kernel subclass calling our native function
+    4:     from numba.np import npyimpl
+       
+    8:     class ExprKernel(npyimpl._Kernel):
+    4:         def generate(self, *args):
+    4:             arg_zip = zip(args, self.outer_sig.args, inner_sig.args)
+   28:             cast_args = [self.cast(val, inty, outty)
+   12:                          for val, inty, outty in arg_zip]
+    8:             result = self.context.call_internal(
+    4:                 builder, cres.fndesc, inner_sig, cast_args)
+    8:             return self.cast(result, inner_sig.return_type,
+    4:                              self.outer_sig.return_type)
+       
+           # create a fake ufunc object which is enough to trick numpy_ufunc_kernel
+    4:     ufunc = SimpleNamespace(nin=len(expr_args), nout=1, __name__=expr_name)
+    4:     ufunc.nargs = ufunc.nin + ufunc.nout
+       
+   16:     args = [lowerer.loadvar(name) for name in expr_args]
+    8:     return npyimpl.numpy_ufunc_kernel(
+    4:         context, builder, outer_sig, args, ufunc, ExprKernel)

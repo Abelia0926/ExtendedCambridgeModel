@@ -1,0 +1,29 @@
+    1: import numpy as np
+       
+    2: class States:
+    1:     def __init__(self):
+    2:         self.S1: np.ndarray = np.array([], dtype=float)
+    2:         self.S2: np.ndarray = np.array([], dtype=float)
+    2:         self.I: np.ndarray = np.array([], dtype=float)
+    2:         self.x1: np.ndarray = np.array([], dtype=float)
+    2:         self.x2: np.ndarray  = np.array([], dtype=float)
+    2:         self.x3: np.ndarray  = np.array([], dtype=float)
+    2:         self.D1: np.ndarray  = np.array([], dtype=float)
+    2:         self.D2: np.ndarray  = np.array([], dtype=float)
+    2:         self.DH1: np.ndarray  = np.array([], dtype=float)
+    2:         self.DH2: np.ndarray  = np.array([], dtype=float)
+    2:         self.Efast: np.ndarray  = np.array([], dtype=float)
+    2:         self.Eslow: np.ndarray  = np.array([], dtype=float)
+    2:         self.Ehigh: np.ndarray  = np.array([], dtype=float)
+    2:         self.Q1: np.ndarray  = np.array([], dtype=float)
+    2:         self.Q2: np.ndarray  = np.array([], dtype=float)
+       
+    2:         self.Gsub: np.ndarray  = np.array([], dtype=float)
+       
+    2:         self.as_array: np.ndarray  = np.array([], dtype=float)
+       
+    2:         self.state_names = ['S1', 'S2', 'I', 'x1', 'x2', 'x3', 'Q1', 'Q2', 'IG', 'D1Slow', 'D2Slow',
+                                       'D1Fast', 'D2Fast', 'EEfast', 'EEhighintensity', 'EElongeffect']
+       
+    2:         self.state_units= ['mU/min', 'S2', 'I', 'x1', 'x2', 'x3', 'Q1', 'Q2', 'mmol/L', 'mmol/min', 'mmol/min',
+                                       'mmol/min', 'mmol/min', 'EEfast', 'EEhighintensity', 'EElongeffect']

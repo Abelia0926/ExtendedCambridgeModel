@@ -1,0 +1,1164 @@
+    1: """This file contains information on how to translate different ufuncs
+       into numba. It is a database of different ufuncs and how each of its
+       loops maps to a function that implements the inner kernel of that ufunc
+       (the inner kernel being the per-element function).
+       
+       Use the function get_ufunc_info to get the information related to the
+       ufunc
+       """
+       
+       
+    1: import numpy as np
+       
+       
+       # this is lazily initialized to avoid circular imports
+    1: _ufunc_db = None
+       
+       
+    1: def _lazy_init_db():
+           global _ufunc_db
+       
+  352:     if _ufunc_db is None:
+    1:         _ufunc_db = {}
+    1:         _fill_ufunc_db(_ufunc_db)
+       
+       
+    1: def get_ufuncs():
+           """obtain a list of supported ufuncs in the db"""
+    1:     _lazy_init_db()
+    1:     return _ufunc_db.keys()
+       
+       
+    1: def get_ufunc_info(ufunc_key):
+           """get the lowering information for the ufunc with key ufunc_key.
+       
+           The lowering information is a dictionary that maps from a numpy
+           loop string (as given by the ufunc types attribute) to a function
+           that handles code generation for a scalar version of the ufunc
+           (that is, generates the "per element" operation").
+       
+           raises a KeyError if the ufunc is not in the ufunc_db
+           """
+  351:     _lazy_init_db()
+  351:     return _ufunc_db[ufunc_key]
+       
+       
+    1: def _fill_ufunc_db(ufunc_db):
+           # some of these imports would cause a problem of circular
+           # imports if done at global scope when importing the numba
+           # module.
+    1:     from numba.np import npyfuncs
+    1:     from numba.cpython import cmathimpl, mathimpl, numbers
+    1:     from numba.np.numpy_support import numpy_version
+       
+    1:     ufunc_db[np.isnat] = {
+               # datetime & timedelta
+    1:         'M->?': npyfuncs.np_datetime_isnat_impl,
+    1:         'm->?': npyfuncs.np_datetime_isnat_impl,
+           }
+       
+    1:     ufunc_db[np.negative] = {
+    1:         '?->?': numbers.int_invert_impl,
+    1:         'b->b': numbers.int_negate_impl,
+    1:         'B->B': numbers.int_negate_impl,
+    1:         'h->h': numbers.int_negate_impl,
+    1:         'H->H': numbers.int_negate_impl,
+    1:         'i->i': numbers.int_negate_impl,
+    1:         'I->I': numbers.int_negate_impl,
+    1:         'l->l': numbers.int_negate_impl,
+    1:         'L->L': numbers.int_negate_impl,
+    1:         'q->q': numbers.int_negate_impl,
+    1:         'Q->Q': numbers.int_negate_impl,
+    1:         'f->f': numbers.real_negate_impl,
+    1:         'd->d': numbers.real_negate_impl,
+    1:         'F->F': numbers.complex_negate_impl,
+    1:         'D->D': numbers.complex_negate_impl,
+           }
+       
+    1:     ufunc_db[np.positive] = {
+    1:         '?->?': numbers.int_positive_impl,
+    1:         'b->b': numbers.int_positive_impl,
+    1:         'B->B': numbers.int_positive_impl,
+    1:         'h->h': numbers.int_positive_impl,
+    1:         'H->H': numbers.int_positive_impl,
+    1:         'i->i': numbers.int_positive_impl,
+    1:         'I->I': numbers.int_positive_impl,
+    1:         'l->l': numbers.int_positive_impl,
+    1:         'L->L': numbers.int_positive_impl,
+    1:         'q->q': numbers.int_positive_impl,
+    1:         'Q->Q': numbers.int_positive_impl,
+    1:         'f->f': numbers.real_positive_impl,
+    1:         'd->d': numbers.real_positive_impl,
+    1:         'F->F': numbers.complex_positive_impl,
+    1:         'D->D': numbers.complex_positive_impl,
+           }
+       
+    1:     ufunc_db[np.absolute] = {
+    1:         '?->?': numbers.int_abs_impl,
+    1:         'b->b': numbers.int_abs_impl,
+    1:         'B->B': numbers.uint_abs_impl,
+    1:         'h->h': numbers.int_abs_impl,
+    1:         'H->H': numbers.uint_abs_impl,
+    1:         'i->i': numbers.int_abs_impl,
+    1:         'I->I': numbers.uint_abs_impl,
+    1:         'l->l': numbers.int_abs_impl,
+    1:         'L->L': numbers.uint_abs_impl,
+    1:         'q->q': numbers.int_abs_impl,
+    1:         'Q->Q': numbers.uint_abs_impl,
+    1:         'f->f': numbers.real_abs_impl,
+    1:         'd->d': numbers.real_abs_impl,
+    1:         'F->f': numbers.complex_abs_impl,
+    1:         'D->d': numbers.complex_abs_impl,
+           }
+       
+    1:     ufunc_db[np.sign] = {
+    1:         'b->b': numbers.int_sign_impl,
+    1:         'B->B': numbers.int_sign_impl,
+    1:         'h->h': numbers.int_sign_impl,
+    1:         'H->H': numbers.int_sign_impl,
+    1:         'i->i': numbers.int_sign_impl,
+    1:         'I->I': numbers.int_sign_impl,
+    1:         'l->l': numbers.int_sign_impl,
+    1:         'L->L': numbers.int_sign_impl,
+    1:         'q->q': numbers.int_sign_impl,
+    1:         'Q->Q': numbers.int_sign_impl,
+    1:         'f->f': numbers.real_sign_impl,
+    1:         'd->d': numbers.real_sign_impl,
+    1:         'F->F': npyfuncs.np_complex_sign_impl,
+    1:         'D->D': npyfuncs.np_complex_sign_impl,
+           }
+       
+    1:     ufunc_db[np.add] = {
+    1:         '??->?': numbers.int_or_impl,
+    1:         'bb->b': numbers.int_add_impl,
+    1:         'BB->B': numbers.int_add_impl,
+    1:         'hh->h': numbers.int_add_impl,
+    1:         'HH->H': numbers.int_add_impl,
+    1:         'ii->i': numbers.int_add_impl,
+    1:         'II->I': numbers.int_add_impl,
+    1:         'll->l': numbers.int_add_impl,
+    1:         'LL->L': numbers.int_add_impl,
+    1:         'qq->q': numbers.int_add_impl,
+    1:         'QQ->Q': numbers.int_add_impl,
+    1:         'ff->f': numbers.real_add_impl,
+    1:         'dd->d': numbers.real_add_impl,
+    1:         'FF->F': numbers.complex_add_impl,
+    1:         'DD->D': numbers.complex_add_impl,
+           }
+       
+    1:     ufunc_db[np.subtract] = {
+    1:         '??->?': numbers.int_xor_impl,
+    1:         'bb->b': numbers.int_sub_impl,
+    1:         'BB->B': numbers.int_sub_impl,
+    1:         'hh->h': numbers.int_sub_impl,
+    1:         'HH->H': numbers.int_sub_impl,
+    1:         'ii->i': numbers.int_sub_impl,
+    1:         'II->I': numbers.int_sub_impl,
+    1:         'll->l': numbers.int_sub_impl,
+    1:         'LL->L': numbers.int_sub_impl,
+    1:         'qq->q': numbers.int_sub_impl,
+    1:         'QQ->Q': numbers.int_sub_impl,
+    1:         'ff->f': numbers.real_sub_impl,
+    1:         'dd->d': numbers.real_sub_impl,
+    1:         'FF->F': numbers.complex_sub_impl,
+    1:         'DD->D': numbers.complex_sub_impl,
+           }
+       
+    1:     ufunc_db[np.multiply] = {
+    1:         '??->?': numbers.int_and_impl,
+    1:         'bb->b': numbers.int_mul_impl,
+    1:         'BB->B': numbers.int_mul_impl,
+    1:         'hh->h': numbers.int_mul_impl,
+    1:         'HH->H': numbers.int_mul_impl,
+    1:         'ii->i': numbers.int_mul_impl,
+    1:         'II->I': numbers.int_mul_impl,
+    1:         'll->l': numbers.int_mul_impl,
+    1:         'LL->L': numbers.int_mul_impl,
+    1:         'qq->q': numbers.int_mul_impl,
+    1:         'QQ->Q': numbers.int_mul_impl,
+    1:         'ff->f': numbers.real_mul_impl,
+    1:         'dd->d': numbers.real_mul_impl,
+    1:         'FF->F': numbers.complex_mul_impl,
+    1:         'DD->D': numbers.complex_mul_impl,
+           }
+       
+    1:     if np.divide != np.true_divide:
+               ufunc_db[np.divide] = {
+                   'bb->b': npyfuncs.np_int_sdiv_impl,
+                   'BB->B': npyfuncs.np_int_udiv_impl,
+                   'hh->h': npyfuncs.np_int_sdiv_impl,
+                   'HH->H': npyfuncs.np_int_udiv_impl,
+                   'ii->i': npyfuncs.np_int_sdiv_impl,
+                   'II->I': npyfuncs.np_int_udiv_impl,
+                   'll->l': npyfuncs.np_int_sdiv_impl,
+                   'LL->L': npyfuncs.np_int_udiv_impl,
+                   'qq->q': npyfuncs.np_int_sdiv_impl,
+                   'QQ->Q': npyfuncs.np_int_udiv_impl,
+                   'ff->f': npyfuncs.np_real_div_impl,
+                   'dd->d': npyfuncs.np_real_div_impl,
+                   'FF->F': npyfuncs.np_complex_div_impl,
+                   'DD->D': npyfuncs.np_complex_div_impl,
+               }
+       
+    1:     ufunc_db[np.true_divide] = {
+    1:         'bb->d': npyfuncs.np_int_truediv_impl,
+    1:         'BB->d': npyfuncs.np_int_truediv_impl,
+    1:         'hh->d': npyfuncs.np_int_truediv_impl,
+    1:         'HH->d': npyfuncs.np_int_truediv_impl,
+    1:         'ii->d': npyfuncs.np_int_truediv_impl,
+    1:         'II->d': npyfuncs.np_int_truediv_impl,
+    1:         'll->d': npyfuncs.np_int_truediv_impl,
+    1:         'LL->d': npyfuncs.np_int_truediv_impl,
+    1:         'qq->d': npyfuncs.np_int_truediv_impl,
+    1:         'QQ->d': npyfuncs.np_int_truediv_impl,
+    1:         'ff->f': npyfuncs.np_real_div_impl,
+    1:         'dd->d': npyfuncs.np_real_div_impl,
+    1:         'FF->F': npyfuncs.np_complex_div_impl,
+    1:         'DD->D': npyfuncs.np_complex_div_impl,
+           }
+       
+    1:     ufunc_db[np.floor_divide] = {
+    1:         'bb->b': npyfuncs.np_int_sdiv_impl,
+    1:         'BB->B': npyfuncs.np_int_udiv_impl,
+    1:         'hh->h': npyfuncs.np_int_sdiv_impl,
+    1:         'HH->H': npyfuncs.np_int_udiv_impl,
+    1:         'ii->i': npyfuncs.np_int_sdiv_impl,
+    1:         'II->I': npyfuncs.np_int_udiv_impl,
+    1:         'll->l': npyfuncs.np_int_sdiv_impl,
+    1:         'LL->L': npyfuncs.np_int_udiv_impl,
+    1:         'qq->q': npyfuncs.np_int_sdiv_impl,
+    1:         'QQ->Q': npyfuncs.np_int_udiv_impl,
+    1:         'ff->f': npyfuncs.np_real_floor_div_impl,
+    1:         'dd->d': npyfuncs.np_real_floor_div_impl,
+           }
+       
+    1:     ufunc_db[np.remainder] = {
+    1:         'bb->b': npyfuncs.np_int_srem_impl,
+    1:         'BB->B': npyfuncs.np_int_urem_impl,
+    1:         'hh->h': npyfuncs.np_int_srem_impl,
+    1:         'HH->H': npyfuncs.np_int_urem_impl,
+    1:         'ii->i': npyfuncs.np_int_srem_impl,
+    1:         'II->I': npyfuncs.np_int_urem_impl,
+    1:         'll->l': npyfuncs.np_int_srem_impl,
+    1:         'LL->L': npyfuncs.np_int_urem_impl,
+    1:         'qq->q': npyfuncs.np_int_srem_impl,
+    1:         'QQ->Q': npyfuncs.np_int_urem_impl,
+    1:         'ff->f': npyfuncs.np_real_mod_impl,
+    1:         'dd->d': npyfuncs.np_real_mod_impl,
+           }
+       
+    1:     ufunc_db[np.divmod] = {
+    1:         'bb->bb': npyfuncs.np_int_sdivrem_impl,
+    1:         'BB->BB': npyfuncs.np_int_udivrem_impl,
+    1:         'hh->hh': npyfuncs.np_int_sdivrem_impl,
+    1:         'HH->HH': npyfuncs.np_int_udivrem_impl,
+    1:         'ii->ii': npyfuncs.np_int_sdivrem_impl,
+    1:         'II->II': npyfuncs.np_int_udivrem_impl,
+    1:         'll->ll': npyfuncs.np_int_sdivrem_impl,
+    1:         'LL->LL': npyfuncs.np_int_udivrem_impl,
+    1:         'qq->qq': npyfuncs.np_int_sdivrem_impl,
+    1:         'QQ->QQ': npyfuncs.np_int_udivrem_impl,
+    1:         'ff->ff': npyfuncs.np_real_divmod_impl,
+    1:         'dd->dd': npyfuncs.np_real_divmod_impl,
+           }
+       
+    1:     ufunc_db[np.fmod] = {
+    1:         'bb->b': npyfuncs.np_int_fmod_impl,
+    1:         'BB->B': npyfuncs.np_int_fmod_impl,
+    1:         'hh->h': npyfuncs.np_int_fmod_impl,
+    1:         'HH->H': npyfuncs.np_int_fmod_impl,
+    1:         'ii->i': npyfuncs.np_int_fmod_impl,
+    1:         'II->I': npyfuncs.np_int_fmod_impl,
+    1:         'll->l': npyfuncs.np_int_fmod_impl,
+    1:         'LL->L': npyfuncs.np_int_fmod_impl,
+    1:         'qq->q': npyfuncs.np_int_fmod_impl,
+    1:         'QQ->Q': npyfuncs.np_int_fmod_impl,
+    1:         'ff->f': npyfuncs.np_real_fmod_impl,
+    1:         'dd->d': npyfuncs.np_real_fmod_impl,
+           }
+       
+    1:     ufunc_db[np.logaddexp] = {
+    1:         'ff->f': npyfuncs.np_real_logaddexp_impl,
+    1:         'dd->d': npyfuncs.np_real_logaddexp_impl,
+           }
+       
+    1:     ufunc_db[np.logaddexp2] = {
+    1:         'ff->f': npyfuncs.np_real_logaddexp2_impl,
+    1:         'dd->d': npyfuncs.np_real_logaddexp2_impl,
+           }
+       
+    1:     ufunc_db[np.power] = {
+    1:         'bb->b': numbers.int_power_impl,
+    1:         'BB->B': numbers.int_power_impl,
+    1:         'hh->h': numbers.int_power_impl,
+    1:         'HH->H': numbers.int_power_impl,
+    1:         'ii->i': numbers.int_power_impl,
+    1:         'II->I': numbers.int_power_impl,
+    1:         'll->l': numbers.int_power_impl,
+    1:         'LL->L': numbers.int_power_impl,
+    1:         'qq->q': numbers.int_power_impl,
+    1:         'QQ->Q': numbers.int_power_impl,
+               # XXX we would like to use `int_power_impl` for real ** integer
+               # as well (for better performance), but the current ufunc typing
+               # rules forbid that
+    1:         'ff->f': numbers.real_power_impl,
+    1:         'dd->d': numbers.real_power_impl,
+    1:         'FF->F': npyfuncs.np_complex_power_impl,
+    1:         'DD->D': npyfuncs.np_complex_power_impl,
+           }
+       
+    1:     ufunc_db[np.float_power] = {
+    1:         'ff->f': npyfuncs.real_float_power_impl,
+    1:         'dd->d': npyfuncs.real_float_power_impl,
+    1:         'FF->F': npyfuncs.np_complex_float_power_impl,
+    1:         'DD->D': npyfuncs.np_complex_float_power_impl,
+           }
+       
+    1:     ufunc_db[np.gcd] = {
+    1:         'bb->b': npyfuncs.np_gcd_impl,
+    1:         'BB->B': npyfuncs.np_gcd_impl,
+    1:         'hh->h': npyfuncs.np_gcd_impl,
+    1:         'HH->H': npyfuncs.np_gcd_impl,
+    1:         'ii->i': npyfuncs.np_gcd_impl,
+    1:         'II->I': npyfuncs.np_gcd_impl,
+    1:         'll->l': npyfuncs.np_gcd_impl,
+    1:         'LL->L': npyfuncs.np_gcd_impl,
+    1:         'qq->q': npyfuncs.np_gcd_impl,
+    1:         'QQ->Q': npyfuncs.np_gcd_impl,
+           }
+       
+    1:     ufunc_db[np.lcm] = {
+    1:         'bb->b': npyfuncs.np_lcm_impl,
+    1:         'BB->B': npyfuncs.np_lcm_impl,
+    1:         'hh->h': npyfuncs.np_lcm_impl,
+    1:         'HH->H': npyfuncs.np_lcm_impl,
+    1:         'ii->i': npyfuncs.np_lcm_impl,
+    1:         'II->I': npyfuncs.np_lcm_impl,
+    1:         'll->l': npyfuncs.np_lcm_impl,
+    1:         'LL->L': npyfuncs.np_lcm_impl,
+    1:         'qq->q': npyfuncs.np_lcm_impl,
+    1:         'QQ->Q': npyfuncs.np_lcm_impl,
+           }
+       
+    1:     ufunc_db[np.rint] = {
+    1:         'f->f': npyfuncs.np_real_rint_impl,
+    1:         'd->d': npyfuncs.np_real_rint_impl,
+    1:         'F->F': npyfuncs.np_complex_rint_impl,
+    1:         'D->D': npyfuncs.np_complex_rint_impl,
+           }
+       
+    1:     ufunc_db[np.conjugate] = {
+    1:         'b->b': numbers.real_conjugate_impl,
+    1:         'B->B': numbers.real_conjugate_impl,
+    1:         'h->h': numbers.real_conjugate_impl,
+    1:         'H->H': numbers.real_conjugate_impl,
+    1:         'i->i': numbers.real_conjugate_impl,
+    1:         'I->I': numbers.real_conjugate_impl,
+    1:         'l->l': numbers.real_conjugate_impl,
+    1:         'L->L': numbers.real_conjugate_impl,
+    1:         'q->q': numbers.real_conjugate_impl,
+    1:         'Q->Q': numbers.real_conjugate_impl,
+    1:         'f->f': numbers.real_conjugate_impl,
+    1:         'd->d': numbers.real_conjugate_impl,
+    1:         'F->F': numbers.complex_conjugate_impl,
+    1:         'D->D': numbers.complex_conjugate_impl,
+           }
+       
+    1:     ufunc_db[np.exp] = {
+    1:         'f->f': npyfuncs.np_real_exp_impl,
+    1:         'd->d': npyfuncs.np_real_exp_impl,
+    1:         'F->F': npyfuncs.np_complex_exp_impl,
+    1:         'D->D': npyfuncs.np_complex_exp_impl,
+           }
+       
+    1:     ufunc_db[np.exp2] = {
+    1:         'f->f': npyfuncs.np_real_exp2_impl,
+    1:         'd->d': npyfuncs.np_real_exp2_impl,
+    1:         'F->F': npyfuncs.np_complex_exp2_impl,
+    1:         'D->D': npyfuncs.np_complex_exp2_impl,
+           }
+       
+    1:     ufunc_db[np.log] = {
+    1:         'f->f': npyfuncs.np_real_log_impl,
+    1:         'd->d': npyfuncs.np_real_log_impl,
+    1:         'F->F': npyfuncs.np_complex_log_impl,
+    1:         'D->D': npyfuncs.np_complex_log_impl,
+           }
+       
+    1:     ufunc_db[np.log2] = {
+    1:         'f->f': npyfuncs.np_real_log2_impl,
+    1:         'd->d': npyfuncs.np_real_log2_impl,
+    1:         'F->F': npyfuncs.np_complex_log2_impl,
+    1:         'D->D': npyfuncs.np_complex_log2_impl,
+           }
+       
+    1:     ufunc_db[np.log10] = {
+    1:         'f->f': npyfuncs.np_real_log10_impl,
+    1:         'd->d': npyfuncs.np_real_log10_impl,
+    1:         'F->F': npyfuncs.np_complex_log10_impl,
+    1:         'D->D': npyfuncs.np_complex_log10_impl,
+           }
+       
+    1:     ufunc_db[np.expm1] = {
+    1:         'f->f': npyfuncs.np_real_expm1_impl,
+    1:         'd->d': npyfuncs.np_real_expm1_impl,
+    1:         'F->F': npyfuncs.np_complex_expm1_impl,
+    1:         'D->D': npyfuncs.np_complex_expm1_impl,
+           }
+       
+    1:     ufunc_db[np.log1p] = {
+    1:         'f->f': npyfuncs.np_real_log1p_impl,
+    1:         'd->d': npyfuncs.np_real_log1p_impl,
+    1:         'F->F': npyfuncs.np_complex_log1p_impl,
+    1:         'D->D': npyfuncs.np_complex_log1p_impl,
+           }
+       
+    1:     ufunc_db[np.sqrt] = {
+    1:         'f->f': npyfuncs.np_real_sqrt_impl,
+    1:         'd->d': npyfuncs.np_real_sqrt_impl,
+    1:         'F->F': npyfuncs.np_complex_sqrt_impl,
+    1:         'D->D': npyfuncs.np_complex_sqrt_impl,
+           }
+       
+    1:     ufunc_db[np.square] = {
+    1:         'b->b': npyfuncs.np_int_square_impl,
+    1:         'B->B': npyfuncs.np_int_square_impl,
+    1:         'h->h': npyfuncs.np_int_square_impl,
+    1:         'H->H': npyfuncs.np_int_square_impl,
+    1:         'i->i': npyfuncs.np_int_square_impl,
+    1:         'I->I': npyfuncs.np_int_square_impl,
+    1:         'l->l': npyfuncs.np_int_square_impl,
+    1:         'L->L': npyfuncs.np_int_square_impl,
+    1:         'q->q': npyfuncs.np_int_square_impl,
+    1:         'Q->Q': npyfuncs.np_int_square_impl,
+    1:         'f->f': npyfuncs.np_real_square_impl,
+    1:         'd->d': npyfuncs.np_real_square_impl,
+    1:         'F->F': npyfuncs.np_complex_square_impl,
+    1:         'D->D': npyfuncs.np_complex_square_impl,
+           }
+       
+    1:     ufunc_db[np.cbrt] = {
+    1:         'f->f': npyfuncs.np_real_cbrt_impl,
+    1:         'd->d': npyfuncs.np_real_cbrt_impl,
+           }
+       
+    1:     ufunc_db[np.reciprocal] = {
+    1:         'b->b': npyfuncs.np_int_reciprocal_impl,
+    1:         'B->B': npyfuncs.np_int_reciprocal_impl,
+    1:         'h->h': npyfuncs.np_int_reciprocal_impl,
+    1:         'H->H': npyfuncs.np_int_reciprocal_impl,
+    1:         'i->i': npyfuncs.np_int_reciprocal_impl,
+    1:         'I->I': npyfuncs.np_int_reciprocal_impl,
+    1:         'l->l': npyfuncs.np_int_reciprocal_impl,
+    1:         'L->L': npyfuncs.np_int_reciprocal_impl,
+    1:         'q->q': npyfuncs.np_int_reciprocal_impl,
+    1:         'Q->Q': npyfuncs.np_int_reciprocal_impl,
+    1:         'f->f': npyfuncs.np_real_reciprocal_impl,
+    1:         'd->d': npyfuncs.np_real_reciprocal_impl,
+    1:         'F->F': npyfuncs.np_complex_reciprocal_impl,
+    1:         'D->D': npyfuncs.np_complex_reciprocal_impl,
+           }
+       
+    1:     ufunc_db[np.sin] = {
+    1:         'f->f': npyfuncs.np_real_sin_impl,
+    1:         'd->d': npyfuncs.np_real_sin_impl,
+    1:         'F->F': npyfuncs.np_complex_sin_impl,
+    1:         'D->D': npyfuncs.np_complex_sin_impl,
+           }
+       
+    1:     ufunc_db[np.cos] = {
+    1:         'f->f': npyfuncs.np_real_cos_impl,
+    1:         'd->d': npyfuncs.np_real_cos_impl,
+    1:         'F->F': npyfuncs.np_complex_cos_impl,
+    1:         'D->D': npyfuncs.np_complex_cos_impl,
+           }
+       
+    1:     tan_impl = cmathimpl.tan_impl
+       
+    1:     ufunc_db[np.tan] = {
+    1:         'f->f': npyfuncs.np_real_tan_impl,
+    1:         'd->d': npyfuncs.np_real_tan_impl,
+    1:         'F->F': tan_impl,
+    1:         'D->D': tan_impl,
+           }
+       
+    1:     arcsin_impl = cmathimpl.asin_impl
+       
+    1:     ufunc_db[np.arcsin] = {
+    1:         'f->f': npyfuncs.np_real_asin_impl,
+    1:         'd->d': npyfuncs.np_real_asin_impl,
+    1:         'F->F': arcsin_impl,
+    1:         'D->D': arcsin_impl,
+           }
+       
+    1:     ufunc_db[np.arccos] = {
+    1:         'f->f': npyfuncs.np_real_acos_impl,
+    1:         'd->d': npyfuncs.np_real_acos_impl,
+    1:         'F->F': cmathimpl.acos_impl,
+    1:         'D->D': cmathimpl.acos_impl,
+           }
+       
+    1:     arctan_impl = cmathimpl.atan_impl
+       
+    1:     ufunc_db[np.arctan] = {
+    1:         'f->f': npyfuncs.np_real_atan_impl,
+    1:         'd->d': npyfuncs.np_real_atan_impl,
+    1:         'F->F': arctan_impl,
+    1:         'D->D': arctan_impl,
+           }
+       
+    1:     ufunc_db[np.arctan2] = {
+    1:         'ff->f': npyfuncs.np_real_atan2_impl,
+    1:         'dd->d': npyfuncs.np_real_atan2_impl,
+           }
+       
+    1:     ufunc_db[np.hypot] = {
+    1:         'ff->f': npyfuncs.np_real_hypot_impl,
+    1:         'dd->d': npyfuncs.np_real_hypot_impl,
+           }
+       
+    1:     ufunc_db[np.sinh] = {
+    1:         'f->f': npyfuncs.np_real_sinh_impl,
+    1:         'd->d': npyfuncs.np_real_sinh_impl,
+    1:         'F->F': npyfuncs.np_complex_sinh_impl,
+    1:         'D->D': npyfuncs.np_complex_sinh_impl,
+           }
+       
+    1:     ufunc_db[np.cosh] = {
+    1:         'f->f': npyfuncs.np_real_cosh_impl,
+    1:         'd->d': npyfuncs.np_real_cosh_impl,
+    1:         'F->F': npyfuncs.np_complex_cosh_impl,
+    1:         'D->D': npyfuncs.np_complex_cosh_impl,
+           }
+       
+    1:     ufunc_db[np.tanh] = {
+    1:         'f->f': npyfuncs.np_real_tanh_impl,
+    1:         'd->d': npyfuncs.np_real_tanh_impl,
+    1:         'F->F': npyfuncs.np_complex_tanh_impl,
+    1:         'D->D': npyfuncs.np_complex_tanh_impl,
+           }
+       
+    1:     arcsinh_impl = cmathimpl.asinh_impl
+       
+    1:     ufunc_db[np.arcsinh] = {
+    1:         'f->f': npyfuncs.np_real_asinh_impl,
+    1:         'd->d': npyfuncs.np_real_asinh_impl,
+    1:         'F->F': arcsinh_impl,
+    1:         'D->D': arcsinh_impl,
+           }
+       
+    1:     ufunc_db[np.arccosh] = {
+    1:         'f->f': npyfuncs.np_real_acosh_impl,
+    1:         'd->d': npyfuncs.np_real_acosh_impl,
+    1:         'F->F': npyfuncs.np_complex_acosh_impl,
+    1:         'D->D': npyfuncs.np_complex_acosh_impl,
+           }
+       
+    1:     arctanh_impl = cmathimpl.atanh_impl
+       
+    1:     ufunc_db[np.arctanh] = {
+    1:         'f->f': npyfuncs.np_real_atanh_impl,
+    1:         'd->d': npyfuncs.np_real_atanh_impl,
+    1:         'F->F': arctanh_impl,
+    1:         'D->D': arctanh_impl,
+           }
+       
+    1:     ufunc_db[np.deg2rad] = {
+    1:         'f->f': mathimpl.radians_float_impl,
+    1:         'd->d': mathimpl.radians_float_impl,
+           }
+       
+    1:     ufunc_db[np.radians] = ufunc_db[np.deg2rad]
+       
+    1:     ufunc_db[np.rad2deg] = {
+    1:         'f->f': mathimpl.degrees_float_impl,
+    1:         'd->d': mathimpl.degrees_float_impl,
+           }
+       
+    1:     ufunc_db[np.degrees] = ufunc_db[np.rad2deg]
+       
+    1:     ufunc_db[np.floor] = {
+    1:         'f->f': npyfuncs.np_real_floor_impl,
+    1:         'd->d': npyfuncs.np_real_floor_impl,
+           }
+       
+    1:     ufunc_db[np.ceil] = {
+    1:         'f->f': npyfuncs.np_real_ceil_impl,
+    1:         'd->d': npyfuncs.np_real_ceil_impl,
+           }
+       
+    1:     ufunc_db[np.trunc] = {
+    1:         'f->f': npyfuncs.np_real_trunc_impl,
+    1:         'd->d': npyfuncs.np_real_trunc_impl,
+           }
+       
+    1:     ufunc_db[np.fabs] = {
+    1:         'f->f': npyfuncs.np_real_fabs_impl,
+    1:         'd->d': npyfuncs.np_real_fabs_impl,
+           }
+       
+           # logical ufuncs
+    1:     ufunc_db[np.greater] = {
+    1:         '??->?': numbers.int_ugt_impl,
+    1:         'bb->?': numbers.int_sgt_impl,
+    1:         'BB->?': numbers.int_ugt_impl,
+    1:         'hh->?': numbers.int_sgt_impl,
+    1:         'HH->?': numbers.int_ugt_impl,
+    1:         'ii->?': numbers.int_sgt_impl,
+    1:         'II->?': numbers.int_ugt_impl,
+    1:         'll->?': numbers.int_sgt_impl,
+    1:         'LL->?': numbers.int_ugt_impl,
+    1:         'qq->?': numbers.int_sgt_impl,
+    1:         'QQ->?': numbers.int_ugt_impl,
+    1:         'ff->?': numbers.real_gt_impl,
+    1:         'dd->?': numbers.real_gt_impl,
+    1:         'FF->?': npyfuncs.np_complex_gt_impl,
+    1:         'DD->?': npyfuncs.np_complex_gt_impl,
+           }
+    1:     if numpy_version >= (1, 25):
+    2:         ufunc_db[np.greater].update({
+    1:             'qQ->?': numbers.int_signed_unsigned_cmp('>'),
+    1:             'Qq->?': numbers.int_unsigned_signed_cmp('>')})
+       
+    1:     ufunc_db[np.greater_equal] = {
+    1:         '??->?': numbers.int_uge_impl,
+    1:         'bb->?': numbers.int_sge_impl,
+    1:         'BB->?': numbers.int_uge_impl,
+    1:         'hh->?': numbers.int_sge_impl,
+    1:         'HH->?': numbers.int_uge_impl,
+    1:         'ii->?': numbers.int_sge_impl,
+    1:         'II->?': numbers.int_uge_impl,
+    1:         'll->?': numbers.int_sge_impl,
+    1:         'LL->?': numbers.int_uge_impl,
+    1:         'qq->?': numbers.int_sge_impl,
+    1:         'QQ->?': numbers.int_uge_impl,
+    1:         'ff->?': numbers.real_ge_impl,
+    1:         'dd->?': numbers.real_ge_impl,
+    1:         'FF->?': npyfuncs.np_complex_ge_impl,
+    1:         'DD->?': npyfuncs.np_complex_ge_impl,
+           }
+    1:     if numpy_version >= (1, 25):
+    2:         ufunc_db[np.greater_equal].update({
+    1:             'qQ->?': numbers.int_signed_unsigned_cmp('>='),
+    1:             'Qq->?': numbers.int_unsigned_signed_cmp('>=')})
+       
+    1:     ufunc_db[np.less] = {
+    1:         '??->?': numbers.int_ult_impl,
+    1:         'bb->?': numbers.int_slt_impl,
+    1:         'BB->?': numbers.int_ult_impl,
+    1:         'hh->?': numbers.int_slt_impl,
+    1:         'HH->?': numbers.int_ult_impl,
+    1:         'ii->?': numbers.int_slt_impl,
+    1:         'II->?': numbers.int_ult_impl,
+    1:         'll->?': numbers.int_slt_impl,
+    1:         'LL->?': numbers.int_ult_impl,
+    1:         'qq->?': numbers.int_slt_impl,
+    1:         'QQ->?': numbers.int_ult_impl,
+    1:         'ff->?': numbers.real_lt_impl,
+    1:         'dd->?': numbers.real_lt_impl,
+    1:         'FF->?': npyfuncs.np_complex_lt_impl,
+    1:         'DD->?': npyfuncs.np_complex_lt_impl,
+           }
+    1:     if numpy_version >= (1, 25):
+    2:         ufunc_db[np.less].update({
+    1:             'qQ->?': numbers.int_signed_unsigned_cmp('<'),
+    1:             'Qq->?': numbers.int_unsigned_signed_cmp('<')})
+       
+    1:     ufunc_db[np.less_equal] = {
+    1:         '??->?': numbers.int_ule_impl,
+    1:         'bb->?': numbers.int_sle_impl,
+    1:         'BB->?': numbers.int_ule_impl,
+    1:         'hh->?': numbers.int_sle_impl,
+    1:         'HH->?': numbers.int_ule_impl,
+    1:         'ii->?': numbers.int_sle_impl,
+    1:         'II->?': numbers.int_ule_impl,
+    1:         'll->?': numbers.int_sle_impl,
+    1:         'LL->?': numbers.int_ule_impl,
+    1:         'qq->?': numbers.int_sle_impl,
+    1:         'QQ->?': numbers.int_ule_impl,
+    1:         'ff->?': numbers.real_le_impl,
+    1:         'dd->?': numbers.real_le_impl,
+    1:         'FF->?': npyfuncs.np_complex_le_impl,
+    1:         'DD->?': npyfuncs.np_complex_le_impl,
+           }
+    1:     if numpy_version >= (1, 25):
+    2:         ufunc_db[np.less_equal].update({
+    1:             'qQ->?': numbers.int_signed_unsigned_cmp('<='),
+    1:             'Qq->?': numbers.int_unsigned_signed_cmp('<=')})
+       
+    1:     ufunc_db[np.not_equal] = {
+    1:         '??->?': numbers.int_ne_impl,
+    1:         'bb->?': numbers.int_ne_impl,
+    1:         'BB->?': numbers.int_ne_impl,
+    1:         'hh->?': numbers.int_ne_impl,
+    1:         'HH->?': numbers.int_ne_impl,
+    1:         'ii->?': numbers.int_ne_impl,
+    1:         'II->?': numbers.int_ne_impl,
+    1:         'll->?': numbers.int_ne_impl,
+    1:         'LL->?': numbers.int_ne_impl,
+    1:         'qq->?': numbers.int_ne_impl,
+    1:         'QQ->?': numbers.int_ne_impl,
+    1:         'ff->?': numbers.real_ne_impl,
+    1:         'dd->?': numbers.real_ne_impl,
+    1:         'FF->?': npyfuncs.np_complex_ne_impl,
+    1:         'DD->?': npyfuncs.np_complex_ne_impl,
+           }
+    1:     if numpy_version >= (1, 25):
+    2:         ufunc_db[np.not_equal].update({
+    1:             'qQ->?': numbers.int_signed_unsigned_cmp('!='),
+    1:             'Qq->?': numbers.int_unsigned_signed_cmp('!=')})
+       
+    1:     ufunc_db[np.equal] = {
+    1:         '??->?': numbers.int_eq_impl,
+    1:         'bb->?': numbers.int_eq_impl,
+    1:         'BB->?': numbers.int_eq_impl,
+    1:         'hh->?': numbers.int_eq_impl,
+    1:         'HH->?': numbers.int_eq_impl,
+    1:         'ii->?': numbers.int_eq_impl,
+    1:         'II->?': numbers.int_eq_impl,
+    1:         'll->?': numbers.int_eq_impl,
+    1:         'LL->?': numbers.int_eq_impl,
+    1:         'qq->?': numbers.int_eq_impl,
+    1:         'QQ->?': numbers.int_eq_impl,
+    1:         'ff->?': numbers.real_eq_impl,
+    1:         'dd->?': numbers.real_eq_impl,
+    1:         'FF->?': npyfuncs.np_complex_eq_impl,
+    1:         'DD->?': npyfuncs.np_complex_eq_impl,
+           }
+    1:     if numpy_version >= (1, 25):
+    2:         ufunc_db[np.equal].update({
+    1:             'qQ->?': numbers.int_signed_unsigned_cmp('=='),
+    1:             'Qq->?': numbers.int_unsigned_signed_cmp('==')})
+       
+    1:     ufunc_db[np.logical_and] = {
+    1:         '??->?': npyfuncs.np_logical_and_impl,
+    1:         'bb->?': npyfuncs.np_logical_and_impl,
+    1:         'BB->?': npyfuncs.np_logical_and_impl,
+    1:         'hh->?': npyfuncs.np_logical_and_impl,
+    1:         'HH->?': npyfuncs.np_logical_and_impl,
+    1:         'ii->?': npyfuncs.np_logical_and_impl,
+    1:         'II->?': npyfuncs.np_logical_and_impl,
+    1:         'll->?': npyfuncs.np_logical_and_impl,
+    1:         'LL->?': npyfuncs.np_logical_and_impl,
+    1:         'qq->?': npyfuncs.np_logical_and_impl,
+    1:         'QQ->?': npyfuncs.np_logical_and_impl,
+    1:         'ff->?': npyfuncs.np_logical_and_impl,
+    1:         'dd->?': npyfuncs.np_logical_and_impl,
+    1:         'FF->?': npyfuncs.np_complex_logical_and_impl,
+    1:         'DD->?': npyfuncs.np_complex_logical_and_impl,
+           }
+       
+    1:     ufunc_db[np.logical_or] = {
+    1:         '??->?': npyfuncs.np_logical_or_impl,
+    1:         'bb->?': npyfuncs.np_logical_or_impl,
+    1:         'BB->?': npyfuncs.np_logical_or_impl,
+    1:         'hh->?': npyfuncs.np_logical_or_impl,
+    1:         'HH->?': npyfuncs.np_logical_or_impl,
+    1:         'ii->?': npyfuncs.np_logical_or_impl,
+    1:         'II->?': npyfuncs.np_logical_or_impl,
+    1:         'll->?': npyfuncs.np_logical_or_impl,
+    1:         'LL->?': npyfuncs.np_logical_or_impl,
+    1:         'qq->?': npyfuncs.np_logical_or_impl,
+    1:         'QQ->?': npyfuncs.np_logical_or_impl,
+    1:         'ff->?': npyfuncs.np_logical_or_impl,
+    1:         'dd->?': npyfuncs.np_logical_or_impl,
+    1:         'FF->?': npyfuncs.np_complex_logical_or_impl,
+    1:         'DD->?': npyfuncs.np_complex_logical_or_impl,
+           }
+       
+    1:     ufunc_db[np.logical_xor] = {
+    1:         '??->?': npyfuncs.np_logical_xor_impl,
+    1:         'bb->?': npyfuncs.np_logical_xor_impl,
+    1:         'BB->?': npyfuncs.np_logical_xor_impl,
+    1:         'hh->?': npyfuncs.np_logical_xor_impl,
+    1:         'HH->?': npyfuncs.np_logical_xor_impl,
+    1:         'ii->?': npyfuncs.np_logical_xor_impl,
+    1:         'II->?': npyfuncs.np_logical_xor_impl,
+    1:         'll->?': npyfuncs.np_logical_xor_impl,
+    1:         'LL->?': npyfuncs.np_logical_xor_impl,
+    1:         'qq->?': npyfuncs.np_logical_xor_impl,
+    1:         'QQ->?': npyfuncs.np_logical_xor_impl,
+    1:         'ff->?': npyfuncs.np_logical_xor_impl,
+    1:         'dd->?': npyfuncs.np_logical_xor_impl,
+    1:         'FF->?': npyfuncs.np_complex_logical_xor_impl,
+    1:         'DD->?': npyfuncs.np_complex_logical_xor_impl,
+           }
+       
+    1:     ufunc_db[np.logical_not] = {
+    1:         '?->?': npyfuncs.np_logical_not_impl,
+    1:         'b->?': npyfuncs.np_logical_not_impl,
+    1:         'B->?': npyfuncs.np_logical_not_impl,
+    1:         'h->?': npyfuncs.np_logical_not_impl,
+    1:         'H->?': npyfuncs.np_logical_not_impl,
+    1:         'i->?': npyfuncs.np_logical_not_impl,
+    1:         'I->?': npyfuncs.np_logical_not_impl,
+    1:         'l->?': npyfuncs.np_logical_not_impl,
+    1:         'L->?': npyfuncs.np_logical_not_impl,
+    1:         'q->?': npyfuncs.np_logical_not_impl,
+    1:         'Q->?': npyfuncs.np_logical_not_impl,
+    1:         'f->?': npyfuncs.np_logical_not_impl,
+    1:         'd->?': npyfuncs.np_logical_not_impl,
+    1:         'F->?': npyfuncs.np_complex_logical_not_impl,
+    1:         'D->?': npyfuncs.np_complex_logical_not_impl,
+           }
+       
+    1:     ufunc_db[np.maximum] = {
+    1:         '??->?': npyfuncs.np_logical_or_impl,
+    1:         'bb->b': npyfuncs.np_int_smax_impl,
+    1:         'BB->B': npyfuncs.np_int_umax_impl,
+    1:         'hh->h': npyfuncs.np_int_smax_impl,
+    1:         'HH->H': npyfuncs.np_int_umax_impl,
+    1:         'ii->i': npyfuncs.np_int_smax_impl,
+    1:         'II->I': npyfuncs.np_int_umax_impl,
+    1:         'll->l': npyfuncs.np_int_smax_impl,
+    1:         'LL->L': npyfuncs.np_int_umax_impl,
+    1:         'qq->q': npyfuncs.np_int_smax_impl,
+    1:         'QQ->Q': npyfuncs.np_int_umax_impl,
+    1:         'ff->f': npyfuncs.np_real_maximum_impl,
+    1:         'dd->d': npyfuncs.np_real_maximum_impl,
+    1:         'FF->F': npyfuncs.np_complex_maximum_impl,
+    1:         'DD->D': npyfuncs.np_complex_maximum_impl,
+           }
+       
+    1:     ufunc_db[np.minimum] = {
+    1:         '??->?': npyfuncs.np_logical_and_impl,
+    1:         'bb->b': npyfuncs.np_int_smin_impl,
+    1:         'BB->B': npyfuncs.np_int_umin_impl,
+    1:         'hh->h': npyfuncs.np_int_smin_impl,
+    1:         'HH->H': npyfuncs.np_int_umin_impl,
+    1:         'ii->i': npyfuncs.np_int_smin_impl,
+    1:         'II->I': npyfuncs.np_int_umin_impl,
+    1:         'll->l': npyfuncs.np_int_smin_impl,
+    1:         'LL->L': npyfuncs.np_int_umin_impl,
+    1:         'qq->q': npyfuncs.np_int_smin_impl,
+    1:         'QQ->Q': npyfuncs.np_int_umin_impl,
+    1:         'ff->f': npyfuncs.np_real_minimum_impl,
+    1:         'dd->d': npyfuncs.np_real_minimum_impl,
+    1:         'FF->F': npyfuncs.np_complex_minimum_impl,
+    1:         'DD->D': npyfuncs.np_complex_minimum_impl,
+           }
+       
+    1:     ufunc_db[np.fmax] = {
+    1:         '??->?': npyfuncs.np_logical_or_impl,
+    1:         'bb->b': npyfuncs.np_int_smax_impl,
+    1:         'BB->B': npyfuncs.np_int_umax_impl,
+    1:         'hh->h': npyfuncs.np_int_smax_impl,
+    1:         'HH->H': npyfuncs.np_int_umax_impl,
+    1:         'ii->i': npyfuncs.np_int_smax_impl,
+    1:         'II->I': npyfuncs.np_int_umax_impl,
+    1:         'll->l': npyfuncs.np_int_smax_impl,
+    1:         'LL->L': npyfuncs.np_int_umax_impl,
+    1:         'qq->q': npyfuncs.np_int_smax_impl,
+    1:         'QQ->Q': npyfuncs.np_int_umax_impl,
+    1:         'ff->f': npyfuncs.np_real_fmax_impl,
+    1:         'dd->d': npyfuncs.np_real_fmax_impl,
+    1:         'FF->F': npyfuncs.np_complex_fmax_impl,
+    1:         'DD->D': npyfuncs.np_complex_fmax_impl,
+           }
+       
+    1:     ufunc_db[np.fmin] = {
+    1:         '??->?': npyfuncs.np_logical_and_impl,
+    1:         'bb->b': npyfuncs.np_int_smin_impl,
+    1:         'BB->B': npyfuncs.np_int_umin_impl,
+    1:         'hh->h': npyfuncs.np_int_smin_impl,
+    1:         'HH->H': npyfuncs.np_int_umin_impl,
+    1:         'ii->i': npyfuncs.np_int_smin_impl,
+    1:         'II->I': npyfuncs.np_int_umin_impl,
+    1:         'll->l': npyfuncs.np_int_smin_impl,
+    1:         'LL->L': npyfuncs.np_int_umin_impl,
+    1:         'qq->q': npyfuncs.np_int_smin_impl,
+    1:         'QQ->Q': npyfuncs.np_int_umin_impl,
+    1:         'ff->f': npyfuncs.np_real_fmin_impl,
+    1:         'dd->d': npyfuncs.np_real_fmin_impl,
+    1:         'FF->F': npyfuncs.np_complex_fmin_impl,
+    1:         'DD->D': npyfuncs.np_complex_fmin_impl,
+           }
+       
+           # misc floating functions
+   18:     ufunc_db[np.isnan] = {
+    1:         'f->?': npyfuncs.np_real_isnan_impl,
+    1:         'd->?': npyfuncs.np_real_isnan_impl,
+    1:         'F->?': npyfuncs.np_complex_isnan_impl,
+    1:         'D->?': npyfuncs.np_complex_isnan_impl,
+               # int8
+    1:         'b->?': npyfuncs.np_int_isnan_impl,
+    1:         'B->?': npyfuncs.np_int_isnan_impl,
+               # int16
+    1:         'h->?': npyfuncs.np_int_isnan_impl,
+    1:         'H->?': npyfuncs.np_int_isnan_impl,
+               # int32
+    1:         'i->?': npyfuncs.np_int_isnan_impl,
+    1:         'I->?': npyfuncs.np_int_isnan_impl,
+               # int64
+    1:         'l->?': npyfuncs.np_int_isnan_impl,
+    1:         'L->?': npyfuncs.np_int_isnan_impl,
+               # intp
+    1:         'q->?': npyfuncs.np_int_isnan_impl,
+    1:         'Q->?': npyfuncs.np_int_isnan_impl,
+               # boolean
+    1:         '?->?': npyfuncs.np_int_isnan_impl,
+               # datetime & timedelta
+    1:         'm->?': npyfuncs.np_datetime_isnat_impl,
+    1:         'M->?': npyfuncs.np_datetime_isnat_impl,
+           }
+       
+   18:     ufunc_db[np.isinf] = {
+    1:         'f->?': npyfuncs.np_real_isinf_impl,
+    1:         'd->?': npyfuncs.np_real_isinf_impl,
+    1:         'F->?': npyfuncs.np_complex_isinf_impl,
+    1:         'D->?': npyfuncs.np_complex_isinf_impl,
+               # int8
+    1:         'b->?': npyfuncs.np_int_isinf_impl,
+    1:         'B->?': npyfuncs.np_int_isinf_impl,
+               # int16
+    1:         'h->?': npyfuncs.np_int_isinf_impl,
+    1:         'H->?': npyfuncs.np_int_isinf_impl,
+               # int32
+    1:         'i->?': npyfuncs.np_int_isinf_impl,
+    1:         'I->?': npyfuncs.np_int_isinf_impl,
+               # int64
+    1:         'l->?': npyfuncs.np_int_isinf_impl,
+    1:         'L->?': npyfuncs.np_int_isinf_impl,
+               # intp
+    1:         'q->?': npyfuncs.np_int_isinf_impl,
+    1:         'Q->?': npyfuncs.np_int_isinf_impl,
+               # boolean
+    1:         '?->?': npyfuncs.np_int_isinf_impl,
+               # datetime & timedelta
+    1:         'm->?': npyfuncs.np_int_isinf_impl,
+    1:         'M->?': npyfuncs.np_int_isinf_impl,
+           }
+       
+   18:     ufunc_db[np.isfinite] = {
+    1:         'f->?': npyfuncs.np_real_isfinite_impl,
+    1:         'd->?': npyfuncs.np_real_isfinite_impl,
+    1:         'F->?': npyfuncs.np_complex_isfinite_impl,
+    1:         'D->?': npyfuncs.np_complex_isfinite_impl,
+               # int8
+    1:         'b->?': npyfuncs.np_int_isfinite_impl,
+    1:         'B->?': npyfuncs.np_int_isfinite_impl,
+               # int16
+    1:         'h->?': npyfuncs.np_int_isfinite_impl,
+    1:         'H->?': npyfuncs.np_int_isfinite_impl,
+               # int32
+    1:         'i->?': npyfuncs.np_int_isfinite_impl,
+    1:         'I->?': npyfuncs.np_int_isfinite_impl,
+               # int64
+    1:         'l->?': npyfuncs.np_int_isfinite_impl,
+    1:         'L->?': npyfuncs.np_int_isfinite_impl,
+               # intp
+    1:         'q->?': npyfuncs.np_int_isfinite_impl,
+    1:         'Q->?': npyfuncs.np_int_isfinite_impl,
+               # boolean
+    1:         '?->?': npyfuncs.np_int_isfinite_impl,
+               # datetime & timedelta
+    1:         'M->?': npyfuncs.np_datetime_isfinite_impl,
+    1:         'm->?': npyfuncs.np_datetime_isfinite_impl,
+           }
+       
+    1:     ufunc_db[np.signbit] = {
+    1:         'f->?': npyfuncs.np_real_signbit_impl,
+    1:         'd->?': npyfuncs.np_real_signbit_impl,
+           }
+       
+    1:     ufunc_db[np.copysign] = {
+    1:         'ff->f': npyfuncs.np_real_copysign_impl,
+    1:         'dd->d': npyfuncs.np_real_copysign_impl,
+           }
+       
+    1:     ufunc_db[np.nextafter] = {
+    1:         'ff->f': npyfuncs.np_real_nextafter_impl,
+    1:         'dd->d': npyfuncs.np_real_nextafter_impl,
+           }
+       
+    1:     ufunc_db[np.spacing] = {
+    1:         'f->f': npyfuncs.np_real_spacing_impl,
+    1:         'd->d': npyfuncs.np_real_spacing_impl,
+           }
+       
+    1:     ufunc_db[np.ldexp] = {
+    1:         'fi->f': npyfuncs.np_real_ldexp_impl,
+    1:         'fl->f': npyfuncs.np_real_ldexp_impl,
+    1:         'di->d': npyfuncs.np_real_ldexp_impl,
+    1:         'dl->d': npyfuncs.np_real_ldexp_impl,
+           }
+       
+           # bit twiddling functions
+    1:     ufunc_db[np.bitwise_and] = {
+    1:         '??->?': numbers.int_and_impl,
+    1:         'bb->b': numbers.int_and_impl,
+    1:         'BB->B': numbers.int_and_impl,
+    1:         'hh->h': numbers.int_and_impl,
+    1:         'HH->H': numbers.int_and_impl,
+    1:         'ii->i': numbers.int_and_impl,
+    1:         'II->I': numbers.int_and_impl,
+    1:         'll->l': numbers.int_and_impl,
+    1:         'LL->L': numbers.int_and_impl,
+    1:         'qq->q': numbers.int_and_impl,
+    1:         'QQ->Q': numbers.int_and_impl,
+           }
+       
+    1:     ufunc_db[np.bitwise_or] = {
+    1:         '??->?': numbers.int_or_impl,
+    1:         'bb->b': numbers.int_or_impl,
+    1:         'BB->B': numbers.int_or_impl,
+    1:         'hh->h': numbers.int_or_impl,
+    1:         'HH->H': numbers.int_or_impl,
+    1:         'ii->i': numbers.int_or_impl,
+    1:         'II->I': numbers.int_or_impl,
+    1:         'll->l': numbers.int_or_impl,
+    1:         'LL->L': numbers.int_or_impl,
+    1:         'qq->q': numbers.int_or_impl,
+    1:         'QQ->Q': numbers.int_or_impl,
+           }
+       
+    1:     ufunc_db[np.bitwise_xor] = {
+    1:         '??->?': numbers.int_xor_impl,
+    1:         'bb->b': numbers.int_xor_impl,
+    1:         'BB->B': numbers.int_xor_impl,
+    1:         'hh->h': numbers.int_xor_impl,
+    1:         'HH->H': numbers.int_xor_impl,
+    1:         'ii->i': numbers.int_xor_impl,
+    1:         'II->I': numbers.int_xor_impl,
+    1:         'll->l': numbers.int_xor_impl,
+    1:         'LL->L': numbers.int_xor_impl,
+    1:         'qq->q': numbers.int_xor_impl,
+    1:         'QQ->Q': numbers.int_xor_impl,
+           }
+       
+    1:     ufunc_db[np.invert] = {  # aka np.bitwise_not
+    1:         '?->?': numbers.int_invert_impl,
+    1:         'b->b': numbers.int_invert_impl,
+    1:         'B->B': numbers.int_invert_impl,
+    1:         'h->h': numbers.int_invert_impl,
+    1:         'H->H': numbers.int_invert_impl,
+    1:         'i->i': numbers.int_invert_impl,
+    1:         'I->I': numbers.int_invert_impl,
+    1:         'l->l': numbers.int_invert_impl,
+    1:         'L->L': numbers.int_invert_impl,
+    1:         'q->q': numbers.int_invert_impl,
+    1:         'Q->Q': numbers.int_invert_impl,
+           }
+       
+    1:     ufunc_db[np.left_shift] = {
+    1:         'bb->b': numbers.int_shl_impl,
+    1:         'BB->B': numbers.int_shl_impl,
+    1:         'hh->h': numbers.int_shl_impl,
+    1:         'HH->H': numbers.int_shl_impl,
+    1:         'ii->i': numbers.int_shl_impl,
+    1:         'II->I': numbers.int_shl_impl,
+    1:         'll->l': numbers.int_shl_impl,
+    1:         'LL->L': numbers.int_shl_impl,
+    1:         'qq->q': numbers.int_shl_impl,
+    1:         'QQ->Q': numbers.int_shl_impl,
+           }
+       
+    1:     ufunc_db[np.right_shift] = {
+    1:         'bb->b': numbers.int_shr_impl,
+    1:         'BB->B': numbers.int_shr_impl,
+    1:         'hh->h': numbers.int_shr_impl,
+    1:         'HH->H': numbers.int_shr_impl,
+    1:         'ii->i': numbers.int_shr_impl,
+    1:         'II->I': numbers.int_shr_impl,
+    1:         'll->l': numbers.int_shr_impl,
+    1:         'LL->L': numbers.int_shr_impl,
+    1:         'qq->q': numbers.int_shr_impl,
+    1:         'QQ->Q': numbers.int_shr_impl,
+           }
+       
+           # Inject datetime64 support
+    1:     from numba.np import npdatetime
+    2:     ufunc_db[np.negative].update({
+    1:         'm->m': npdatetime.timedelta_neg_impl,
+           })
+    2:     ufunc_db[np.positive].update({
+    1:         'm->m': npdatetime.timedelta_pos_impl,
+           })
+    2:     ufunc_db[np.absolute].update({
+    1:         'm->m': npdatetime.timedelta_abs_impl,
+           })
+    2:     ufunc_db[np.sign].update({
+    1:         'm->m': npdatetime.timedelta_sign_impl,
+           })
+    2:     ufunc_db[np.add].update({
+    1:         'mm->m': npdatetime.timedelta_add_impl,
+    1:         'Mm->M': npdatetime.datetime_plus_timedelta,
+    1:         'mM->M': npdatetime.timedelta_plus_datetime,
+           })
+    2:     ufunc_db[np.subtract].update({
+    1:         'mm->m': npdatetime.timedelta_sub_impl,
+    1:         'Mm->M': npdatetime.datetime_minus_timedelta,
+    1:         'MM->m': npdatetime.datetime_minus_datetime,
+           })
+    2:     ufunc_db[np.multiply].update({
+    1:         'mq->m': npdatetime.timedelta_times_number,
+    1:         'md->m': npdatetime.timedelta_times_number,
+    1:         'qm->m': npdatetime.number_times_timedelta,
+    1:         'dm->m': npdatetime.number_times_timedelta,
+           })
+    1:     if np.divide != np.true_divide:
+               ufunc_db[np.divide].update({
+                   'mq->m': npdatetime.timedelta_over_number,
+                   'md->m': npdatetime.timedelta_over_number,
+                   'mm->d': npdatetime.timedelta_over_timedelta,
+               })
+    2:     ufunc_db[np.true_divide].update({
+    1:         'mq->m': npdatetime.timedelta_over_number,
+    1:         'md->m': npdatetime.timedelta_over_number,
+    1:         'mm->d': npdatetime.timedelta_over_timedelta,
+           })
+    2:     ufunc_db[np.floor_divide].update({
+    1:         'mq->m': npdatetime.timedelta_over_number,
+    1:         'md->m': npdatetime.timedelta_over_number,
+           })
+       
+    2:     ufunc_db[np.floor_divide].update({
+    1:         'mm->q': npdatetime.timedelta_floor_div_timedelta,
+           })
+       
+    2:     ufunc_db[np.equal].update({
+    1:         'MM->?': npdatetime.datetime_eq_datetime_impl,
+    1:         'mm->?': npdatetime.timedelta_eq_timedelta_impl,
+           })
+    2:     ufunc_db[np.not_equal].update({
+    1:         'MM->?': npdatetime.datetime_ne_datetime_impl,
+    1:         'mm->?': npdatetime.timedelta_ne_timedelta_impl,
+           })
+    2:     ufunc_db[np.less].update({
+    1:         'MM->?': npdatetime.datetime_lt_datetime_impl,
+    1:         'mm->?': npdatetime.timedelta_lt_timedelta_impl,
+           })
+    2:     ufunc_db[np.less_equal].update({
+    1:         'MM->?': npdatetime.datetime_le_datetime_impl,
+    1:         'mm->?': npdatetime.timedelta_le_timedelta_impl,
+           })
+    2:     ufunc_db[np.greater].update({
+    1:         'MM->?': npdatetime.datetime_gt_datetime_impl,
+    1:         'mm->?': npdatetime.timedelta_gt_timedelta_impl,
+           })
+    2:     ufunc_db[np.greater_equal].update({
+    1:         'MM->?': npdatetime.datetime_ge_datetime_impl,
+    1:         'mm->?': npdatetime.timedelta_ge_timedelta_impl,
+           })
+    2:     ufunc_db[np.maximum].update({
+    1:         'MM->M': npdatetime.datetime_maximum_impl,
+    1:         'mm->m': npdatetime.timedelta_maximum_impl,
+           })
+    2:     ufunc_db[np.minimum].update({
+    1:         'MM->M': npdatetime.datetime_minimum_impl,
+    1:         'mm->m': npdatetime.timedelta_minimum_impl,
+           })
+           # there is no difference for datetime/timedelta in maximum/fmax
+           # and minimum/fmin
+    2:     ufunc_db[np.fmax].update({
+    1:         'MM->M': npdatetime.datetime_fmax_impl,
+    1:         'mm->m': npdatetime.timedelta_fmax_impl,
+           })
+    2:     ufunc_db[np.fmin].update({
+    1:         'MM->M': npdatetime.datetime_fmin_impl,
+    1:         'mm->m': npdatetime.timedelta_fmin_impl,
+           })
+       
+    2:     ufunc_db[np.remainder].update({
+    1:         'mm->m': npdatetime.timedelta_mod_timedelta,
+           })

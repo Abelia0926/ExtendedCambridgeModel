@@ -1,0 +1,121 @@
+    1: from .. import types, utils, errors
+    1: import operator
+    1: from .templates import (AttributeTemplate, ConcreteTemplate, AbstractTemplate,
+                               infer_global, infer, infer_getattr,
+                               signature, bound_function, make_callable_template)
+    1: from .builtins import normalize_1d_index
+       
+       
+    3: @infer_global(operator.contains)
+    2: class InContainer(AbstractTemplate):
+    1:     key = operator.contains
+       
+    1:     def generic(self, args, kws):
+               cont, item = args
+               if isinstance(cont, types.Container):
+                   return signature(types.boolean, cont, cont.dtype)
+       
+    3: @infer_global(len)
+    2: class ContainerLen(AbstractTemplate):
+       
+    1:     def generic(self, args, kws):
+    2:         assert not kws
+    2:         (val,) = args
+    2:         if isinstance(val, (types.Container)):
+    2:             return signature(types.intp, val)
+       
+       
+    3: @infer_global(operator.truth)
+    2: class SequenceBool(AbstractTemplate):
+    1:     key = operator.truth
+       
+    1:     def generic(self, args, kws):
+               assert not kws
+               (val,) = args
+               if isinstance(val, (types.Sequence)):
+                   return signature(types.boolean, val)
+       
+       
+    3: @infer_global(operator.getitem)
+    2: class GetItemSequence(AbstractTemplate):
+    1:     key = operator.getitem
+       
+    1:     def generic(self, args, kws):
+   72:         seq, idx = args
+   72:         if isinstance(seq, types.Sequence):
+                   idx = normalize_1d_index(idx)
+                   if isinstance(idx, types.SliceType):
+                       # Slicing a tuple only supported with static_getitem
+                       if not isinstance(seq, types.BaseTuple):
+                           return signature(seq, seq, idx)
+                   elif isinstance(idx, types.Integer):
+                       return signature(seq.dtype, seq, idx)
+       
+    3: @infer_global(operator.setitem)
+    2: class SetItemSequence(AbstractTemplate):
+    1:     def generic(self, args, kws):
+   27:         seq, idx, value = args
+   27:         if isinstance(seq, types.MutableSequence):
+    3:             idx = normalize_1d_index(idx)
+    3:             if isinstance(idx, types.SliceType):
+                       return signature(types.none, seq, idx, seq)
+    3:             elif isinstance(idx, types.Integer):
+    3:                 if not self.context.can_convert(value, seq.dtype):
+                           msg = "invalid setitem with value of {} to element of {}"
+                           raise errors.TypingError(msg.format(types.unliteral(value), seq.dtype))
+    3:                 return signature(types.none, seq, idx, seq.dtype)
+       
+       
+    3: @infer_global(operator.delitem)
+    2: class DelItemSequence(AbstractTemplate):
+    1:     def generic(self, args, kws):
+               seq, idx = args
+               if isinstance(seq, types.MutableSequence):
+                   idx = normalize_1d_index(idx)
+                   return signature(types.none, seq, idx)
+       
+       
+       # --------------------------------------------------------------------------
+       # named tuples
+       
+    3: @infer_getattr
+    2: class NamedTupleAttribute(AttributeTemplate):
+    1:     key = types.BaseNamedTuple
+       
+    1:     def resolve___class__(self, tup):
+               return types.NamedTupleClass(tup.instance_class)
+       
+    1:     def generic_resolve(self, tup, attr):
+               # Resolution of other attributes
+    8:         try:
+    8:             index = tup.fields.index(attr)
+               except ValueError:
+                   return
+    8:         return tup[index]
+       
+       
+    3: @infer_getattr
+    2: class NamedTupleClassAttribute(AttributeTemplate):
+    1:     key = types.NamedTupleClass
+       
+    1:     def resolve___call__(self, classty):
+               """
+               Resolve the named tuple constructor, aka the class's __call__ method.
+               """
+    2:         instance_class = classty.instance_class
+    2:         pysig = utils.pysignature(instance_class)
+       
+    2:         def typer(*args, **kws):
+                   # Fold keyword args
+    2:             try:
+    2:                 bound = pysig.bind(*args, **kws)
+                   except TypeError as e:
+                       msg = "In '%s': %s" % (instance_class, e)
+                       e.args = (msg,)
+                       raise
+    2:             assert not bound.kwargs
+    2:             return types.BaseTuple.from_types(bound.args, instance_class)
+       
+               # Override the typer's pysig to match the namedtuple constructor's
+    2:         typer.pysig = pysig
+    2:         return types.Function(make_callable_template(self.key, typer))

@@ -1,0 +1,21 @@
+    1: import numpy as np
+    1: from dataclasses import dataclass, field
+    1: from pymgipsim.InputGeneration.signal import Signal
+    1: from pymgipsim.VirtualPatient.Models.Inputs import BaseInputs
+       
+    3: @dataclass
+    2: class Inputs(BaseInputs):
+    2:     heart_rate: Signal = field(default_factory=lambda: Signal())
+    2:     METACSM: Signal = field(default_factory=lambda: Signal())
+    2:     deltaEE: Signal = field(default_factory=lambda: Signal())
+       
+    2:     @property
+    2:     def as_array(self):
+    5:         self._as_array = np.stack((self.heart_rate.sampled_signal, self.METACSM.sampled_signal, self.deltaEE.sampled_signal),axis=1)
+    5:         return self._as_array
+       
+    2:     @as_array.setter
+    2:     def as_array(self, array: np.ndarray):
+    1:         array_sw = np.swapaxes(array, 0, 1)
+    1:         self.heart_rate.sampled_signal, self.METACSM.sampled_signal, self.deltaEE.sampled_signal = array_sw
+    1:         self._as_array = array

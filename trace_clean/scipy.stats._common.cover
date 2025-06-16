@@ -1,0 +1,5 @@
+    1: from collections import namedtuple
+       
+       
+    1: ConfidenceInterval = namedtuple("ConfidenceInterval", ["low", "high"])
+    1: ConfidenceInterval. __doc__ = "Class for confidence intervals."

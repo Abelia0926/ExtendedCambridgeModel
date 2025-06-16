@@ -1,0 +1,22 @@
+    1: import os
+       
+    1: """
+       Path for the default settings
+       """
+       
+    1: simulator_path = os.path.abspath(os.path.join('.', 'pymgipsim'))
+       
+    1: scenarios_path = os.path.abspath(os.path.join('.', 'Scenarios'))
+       
+    1: models_path = os.path.abspath(os.path.join('.', 'pymgipsim', 'VirtualPatient', 'Models'))
+       
+    1: controller_path = os.path.abspath(os.path.join('.', 'pymgipsim', 'Controllers'))
+       
+    1: default_settings_path = os.path.abspath(os.path.join('.', 'pymgipsim', 'Settings', 'DefaultSettings'))
+       
+    1: results_path = os.path.abspath(os.path.join('.', 'SimulationResults'))
+       
+    1: if __name__ == '__main__':
+           print(simulator_path)
+           print(default_settings_path)
+           print(results_path)

@@ -1,0 +1,41 @@
+    1: import numpy as np
+    1: from dataclasses import dataclass, field
+    1: from pymgipsim.InputGeneration.signal import Signal
+    1: from pymgipsim.VirtualPatient.Models.Inputs import BaseInputs
+       
+    3: @dataclass
+    2: class Inputs(BaseInputs):
+    1:     """ Stores the Hovorka models input signals in Signal classes.
+       
+                   Attributes:
+                       uFastCarbs (Signal) : Fast acting carbs [mmol/min] typically with an absorption time constant of 20 minutes.
+                       uSlowCarbs (Signal) : Slow acting carbs [mmol/min] typically with an absorption time constant of 40 minutes.
+                       uHR (Signal) : Heart rate signal [BPM], used in the physical activity submodel.
+                       uInsulin (Signal) : Combined basal and bolus insulin input [mU/min]
+                       unknown (Signal) : ???
+       
+                   Hint:
+                       .as_array() function returns 3D numpy array where:
+                       1st dim: Subject in the virtual cohort
+                       2nd dim: Input variable
+                       3rd dim: Timestep in the simulation horizon
+       
+           """
+    2:     uFastCarbs: Signal = field(default_factory=lambda: Signal())
+    2:     uSlowCarbs: Signal = field(default_factory=lambda: Signal())
+    2:     uHR: Signal = field(default_factory=lambda: Signal())
+    2:     uInsulin: Signal = field(default_factory=lambda: Signal())
+    2:     energy_expenditure: Signal = field(default_factory=lambda: Signal())
+       
+       
+       
+    2:     @property
+    2:     def as_array(self):
+    4:         self._as_array = np.stack((self.uFastCarbs.sampled_signal, self.uSlowCarbs.sampled_signal, self.uHR.sampled_signal, self.uInsulin.sampled_signal, self.energy_expenditure.sampled_signal),axis=1)
+    4:         return self._as_array
+       
+    2:     @as_array.setter
+    2:     def as_array(self, array: np.ndarray):
+    1:         array_sw = np.swapaxes(array, 0, 1)
+    1:         self.uFastCarbs.sampled_signal, self.uSlowCarbs.sampled_signal, self.uHR.sampled_signal, self.uInsulin.sampled_signal, self.energy_expenditure.sampled_signal = array_sw
+    1:         self._as_array = array

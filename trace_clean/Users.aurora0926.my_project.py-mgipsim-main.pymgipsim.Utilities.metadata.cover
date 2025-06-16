@@ -1,0 +1,32 @@
+    1: from ..Utilities.units_conversions_constants import DEFAULT_RANDOM_SEED
+       
+    1: import numpy as np
+    1: import sys
+    1: from datetime import datetime
+       
+    1: np.random.seed(DEFAULT_RANDOM_SEED)
+       
+    2: class SimulationMetaData:
+    2:     @staticmethod
+    2:     def generate_timestamp() -> str:
+               """
+               Generate a timestamp in the format "%m_%d_%Y_%H_%M_%S".
+       
+               Returns:
+               - str
+                   Timestamp string.
+               """
+    1:         return str(datetime.now().strftime("%m_%d_%Y_%H_%M_%S"))
+       
+    2:     @staticmethod
+    2:     def generate_system_information() -> str:
+               """
+               Generate system information including the Python version.
+       
+               Returns:
+               - str
+                   System information.
+               """
+    1:         return sys.version
+       
+       

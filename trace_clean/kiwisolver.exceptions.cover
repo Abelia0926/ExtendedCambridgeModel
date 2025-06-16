@@ -1,0 +1,51 @@
+       # --------------------------------------------------------------------------------------
+       # Copyright (c) 2023-2024, Nucleic Development Team.
+       #
+       # Distributed under the terms of the Modified BSD License.
+       #
+       # The full license is in the file LICENSE, distributed with this software.
+       # --------------------------------------------------------------------------------------
+    1: """Kiwi exceptions.
+       
+       Imported by the kiwisolver C extension.
+       
+       """
+       
+       
+    2: class BadRequiredStrength(Exception):
+    1:     pass
+       
+       
+    2: class DuplicateConstraint(Exception):
+    1:     __slots__ = ("constraint",)
+       
+    1:     def __init__(self, constraint):
+               self.constraint = constraint
+       
+       
+    2: class DuplicateEditVariable(Exception):
+    1:     __slots__ = ("edit_variable",)
+       
+    1:     def __init__(self, edit_variable):
+               self.edit_variable = edit_variable
+       
+       
+    2: class UnknownConstraint(Exception):
+    1:     __slots__ = ("constraint",)
+       
+    1:     def __init__(self, constraint):
+               self.constraint = constraint
+       
+       
+    2: class UnknownEditVariable(Exception):
+    1:     __slots__ = ("edit_variable",)
+       
+    1:     def __init__(self, edit_variable):
+               self.edit_variable = edit_variable
+       
+       
+    2: class UnsatisfiableConstraint(Exception):
+    1:     __slots__ = ("constraint",)
+       
+    1:     def __init__(self, constraint):
+               self.constraint = constraint

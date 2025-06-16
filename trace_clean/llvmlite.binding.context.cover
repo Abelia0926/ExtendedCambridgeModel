@@ -1,0 +1,29 @@
+    1: from llvmlite.binding import ffi
+       
+       
+    1: def create_context():
+           return ContextRef(ffi.lib.LLVMPY_ContextCreate())
+       
+       
+    1: def get_global_context():
+  157:     return GlobalContextRef(ffi.lib.LLVMPY_GetGlobalContext())
+       
+       
+    2: class ContextRef(ffi.ObjectRef):
+    1:     def __init__(self, context_ptr):
+  157:         super(ContextRef, self).__init__(context_ptr)
+       
+    1:     def _dispose(self):
+               ffi.lib.LLVMPY_ContextDispose(self)
+       
+       
+    2: class GlobalContextRef(ContextRef):
+    1:     def _dispose(self):
+  125:         pass
+       
+       
+    1: ffi.lib.LLVMPY_GetGlobalContext.restype = ffi.LLVMContextRef
+       
+    1: ffi.lib.LLVMPY_ContextCreate.restype = ffi.LLVMContextRef
+       
+    1: ffi.lib.LLVMPY_ContextDispose.argtypes = [ffi.LLVMContextRef]

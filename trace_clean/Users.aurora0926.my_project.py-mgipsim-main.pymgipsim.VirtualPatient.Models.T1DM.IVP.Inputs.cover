@@ -1,0 +1,24 @@
+    1: import numpy as np
+    1: from dataclasses import dataclass, field
+    1: from pymgipsim.InputGeneration.signal import Signal
+    1: from pymgipsim.VirtualPatient.Models.Inputs import BaseInputs
+       
+    3: @dataclass
+    2: class Inputs(BaseInputs):
+    1:     basal_insulin: Signal = field(default_factory=lambda: Signal())
+    1:     bolus_insulin: Signal = field(default_factory=lambda: Signal())
+    1:     taud: Signal = field(default_factory=lambda: Signal())
+    1:     carb: Signal = field(default_factory=lambda: Signal())
+    1:     Ra: Signal = field(default_factory=lambda: Signal())
+       
+       
+    2:     @property
+    2:     def as_array(self):
+               self._as_array = np.stack((self.basal_insulin.sampled_signal, self.bolus_insulin.sampled_signal, self.taud.sampled_signal, self.carb.sampled_signal, self.Ra.sampled_signal),axis=1)
+               return self._as_array
+       
+    2:     @as_array.setter
+    2:     def as_array(self, array: np.ndarray):
+               array_sw = np.swapaxes(array, 0, 1)
+               self.basal_insulin.sampled_signal, self.bolus_insulin.sampled_signal, self.taud.sampled_signal, self.carb.sampled_signal, self.Ra.sampled_signal = array_sw
+               self._as_array = array

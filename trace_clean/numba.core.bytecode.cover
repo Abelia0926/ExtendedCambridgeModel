@@ -1,0 +1,607 @@
+    1: from collections import namedtuple, OrderedDict
+    1: import dis
+    1: import inspect
+    1: import itertools
+       
+    1: from types import CodeType, ModuleType
+       
+    1: from numba.core import errors, utils, serialize
+    1: from numba.core.utils import PYVERSION
+       
+       
+    1: if PYVERSION in ((3, 12), ):
+           from opcode import _inline_cache_entries
+           # Instruction/opcode length in bytes
+           INSTR_LEN = 2
+    1: elif PYVERSION in ((3, 9), (3, 10), (3, 11)):
+    1:     pass
+       else:
+           raise NotImplementedError(PYVERSION)
+       
+       
+    1: opcode_info = namedtuple('opcode_info', ['argsize'])
+    2: _ExceptionTableEntry = namedtuple("_ExceptionTableEntry",
+    1:                                   "start end target depth lasti")
+       
+       # The following offset is used as a hack to inject a NOP at the start of the
+       # bytecode. So that function starting with `while True` will not have block-0
+       # as a jump target. The Lowerer puts argument initialization at block-0.
+    1: _FIXED_OFFSET = 2
+       
+       
+    1: def get_function_object(obj):
+           """
+           Objects that wraps function should provide a "__numba__" magic attribute
+           that contains a name of an attribute that contains the actual python
+           function object.
+           """
+   24:     attr = getattr(obj, "__numba__", None)
+   24:     if attr:
+               return getattr(obj, attr)
+   24:     return obj
+       
+       
+    1: def get_code_object(obj):
+           "Shamelessly borrowed from llpython"
+   82:     return getattr(obj, '__code__', getattr(obj, 'func_code', None))
+       
+       
+    1: def _as_opcodes(seq):
+    1:     lst = []
+    3:     for s in seq:
+    2:         c = dis.opmap.get(s)
+    2:         if c is not None:
+    2:             lst.append(c)
+    1:     return lst
+       
+       
+    1: JREL_OPS = frozenset(dis.hasjrel)
+    1: JABS_OPS = frozenset(dis.hasjabs)
+    1: JUMP_OPS = JREL_OPS | JABS_OPS
+    1: TERM_OPS = frozenset(_as_opcodes(['RETURN_VALUE', 'RAISE_VARARGS']))
+    1: EXTENDED_ARG = dis.EXTENDED_ARG
+    1: HAVE_ARGUMENT = dis.HAVE_ARGUMENT
+       
+       
+    2: class ByteCodeInst(object):
+    1:     '''
+           Attributes
+           ----------
+           - offset:
+               byte offset of opcode
+           - opcode:
+               opcode integer value
+           - arg:
+               instruction arg
+           - lineno:
+               -1 means unknown
+           '''
+    1:     __slots__ = 'offset', 'next', 'opcode', 'opname', 'arg', 'lineno'
+       
+    1:     def __init__(self, offset, opcode, arg, nextoffset):
+ 1795:         self.offset = offset
+ 1795:         self.next = nextoffset
+ 1795:         self.opcode = opcode
+ 1795:         self.opname = dis.opname[opcode]
+ 1795:         self.arg = arg
+ 1795:         self.lineno = -1  # unknown line number
+       
+    2:     @property
+    2:     def is_jump(self):
+   96:         return self.opcode in JUMP_OPS
+       
+    2:     @property
+    2:     def is_terminator(self):
+               return self.opcode in TERM_OPS
+       
+    1:     def get_jump_target(self):
+               # With Python 3.10 the addressing of "bytecode" instructions has
+               # changed from using bytes to using 16-bit words instead. As a
+               # consequence the code to determine where a jump will lead had to be
+               # adapted.
+               # See also:
+               # https://bugs.python.org/issue26647
+               # https://bugs.python.org/issue27129
+               # https://github.com/python/cpython/pull/25069
+   96:         assert self.is_jump
+   96:         if PYVERSION in ((3, 12), ):
+                   if self.opcode in (dis.opmap[k]
+                                      for k in ["JUMP_BACKWARD"]):
+                       return self.offset - (self.arg - 1) * 2
+   96:         elif PYVERSION in ((3, 11), ):
+ 1094:             if self.opcode in (dis.opmap[k]
+  508:                                for k in ("JUMP_BACKWARD",
+                                                "POP_JUMP_BACKWARD_IF_TRUE",
+                                                "POP_JUMP_BACKWARD_IF_FALSE",
+                                                "POP_JUMP_BACKWARD_IF_NONE",
+                                                "POP_JUMP_BACKWARD_IF_NOT_NONE",)):
+   18:                 return self.offset - (self.arg - 1) * 2
+               elif PYVERSION in ((3, 9), (3, 10)):
+                   pass
+               else:
+                   raise NotImplementedError(PYVERSION)
+       
+   78:         if PYVERSION in ((3, 10), (3, 11), (3, 12)):
+   78:             if self.opcode in JREL_OPS:
+   78:                 return self.next + self.arg * 2
+                   else:
+                       assert self.opcode in JABS_OPS
+                       return self.arg * 2 - 2
+               elif PYVERSION in ((3, 9),):
+                   if self.opcode in JREL_OPS:
+                       return self.next + self.arg
+                   else:
+                       assert self.opcode in JABS_OPS
+                       return self.arg
+               else:
+                   raise NotImplementedError(PYVERSION)
+       
+    1:     def __repr__(self):
+  818:         return '%s(arg=%s, lineno=%d)' % (self.opname, self.arg, self.lineno)
+       
+    2:     @property
+    2:     def block_effect(self):
+               """Effect of the block stack
+               Returns +1 (push), 0 (none) or -1 (pop)
+               """
+               if self.opname.startswith('SETUP_'):
+                   return 1
+               elif self.opname == 'POP_BLOCK':
+                   return -1
+               else:
+                   return 0
+       
+       
+    1: CODE_LEN = 1
+    1: ARG_LEN = 1
+    1: NO_ARG_LEN = 1
+       
+    1: OPCODE_NOP = dis.opname.index('NOP')
+       
+       
+       # Adapted from Lib/dis.py
+    1: def _unpack_opargs(code):
+           """
+           Returns a 4-int-tuple of
+           (bytecode offset, opcode, argument, offset of next bytecode).
+           """
+   24:     extended_arg = 0
+   24:     n = len(code)
+   24:     offset = i = 0
+ 1795:     while i < n:
+ 1771:         op = code[i]
+ 1771:         i += CODE_LEN
+ 1771:         if op >= HAVE_ARGUMENT:
+  715:             arg = code[i] | extended_arg
+ 1430:             for j in range(ARG_LEN):
+  715:                 arg |= code[i + j] << (8 * j)
+  715:             i += ARG_LEN
+  715:             if PYVERSION in ((3, 12), ):
+                       # Python 3.12 introduced cache slots. We need to account for
+                       # cache slots when we determine the offset of the next opcode.
+                       # The number of cache slots is specific to each opcode and can
+                       # be looked up in the _inline_cache_entries dictionary.
+                       i += _inline_cache_entries[op] * INSTR_LEN
+  715:             elif PYVERSION in ((3, 9), (3, 10), (3, 11)):
+  715:                 pass
+                   else:
+                       raise NotImplementedError(PYVERSION)
+  715:             if op == EXTENDED_ARG:
+                       # This is a deviation from what dis does...
+                       # In python 3.11 it seems like EXTENDED_ARGs appear more often
+                       # and are also used as jump targets. So as to not have to do
+                       # "book keeping" for where EXTENDED_ARGs have been "skipped"
+                       # they are replaced with NOPs so as to provide a legal jump
+                       # target and also ensure that the bytecode offsets are correct.
+    4:                 yield (offset, OPCODE_NOP, arg, i)
+    4:                 extended_arg = arg << 8 * ARG_LEN
+    4:                 offset = i
+    4:                 continue
+               else:
+ 1056:             arg = None
+ 1056:             i += NO_ARG_LEN
+ 1056:             if PYVERSION in ((3, 12), ):
+                       # Python 3.12 introduced cache slots. We need to account for
+                       # cache slots when we determine the offset of the next opcode.
+                       # The number of cache slots is specific to each opcode and can
+                       # be looked up in the _inline_cache_entries dictionary.
+                       i += _inline_cache_entries[op] * INSTR_LEN
+ 1056:             elif PYVERSION in ((3, 9), (3, 10), (3, 11)):
+ 1056:                 pass
+                   else:
+                       raise NotImplementedError(PYVERSION)
+       
+ 1767:         extended_arg = 0
+ 1767:         yield (offset, op, arg, i)
+ 1767:         offset = i  # Mark inst offset at first extended
+       
+       
+    1: def _patched_opargs(bc_stream):
+           """Patch the bytecode stream.
+       
+           - Adds a NOP bytecode at the start to avoid jump target being at the entry.
+           """
+           # Injected NOP
+   24:     yield (0, OPCODE_NOP, None, _FIXED_OFFSET)
+           # Adjust bytecode offset for the rest of the stream
+ 1795:     for offset, opcode, arg, nextoffset in bc_stream:
+               # If the opcode has an absolute jump target, adjust it.
+ 1771:         if opcode in JABS_OPS:
+                   arg += _FIXED_OFFSET
+ 1771:         yield offset + _FIXED_OFFSET, opcode, arg, nextoffset + _FIXED_OFFSET
+       
+       
+    2: class ByteCodeIter(object):
+    1:     def __init__(self, code):
+   24:         self.code = code
+   24:         self.iter = iter(_patched_opargs(_unpack_opargs(self.code.co_code)))
+       
+    1:     def __iter__(self):
+   24:         return self
+       
+    1:     def _fetch_opcode(self):
+ 1819:         return next(self.iter)
+       
+    1:     def next(self):
+ 1819:         offset, opcode, arg, nextoffset = self._fetch_opcode()
+ 3590:         return offset, ByteCodeInst(offset=offset, opcode=opcode, arg=arg,
+ 1795:                                     nextoffset=nextoffset)
+       
+    1:     __next__ = next
+       
+    1:     def read_arg(self, size):
+               buf = 0
+               for i in range(size):
+                   _offset, byte = next(self.iter)
+                   buf |= byte << (8 * i)
+               return buf
+       
+       
+    2: class _ByteCode(object):
+    1:     """
+           The decoded bytecode of a function, and related information.
+           """
+    1:     __slots__ = ('func_id', 'co_names', 'co_varnames', 'co_consts',
+                        'co_cellvars', 'co_freevars', 'exception_entries',
+                        'table', 'labels')
+       
+    1:     def __init__(self, func_id):
+   24:         code = func_id.code
+       
+   90:         labels = set(x + _FIXED_OFFSET for x in dis.findlabels(code.co_code))
+   24:         labels.add(0)
+       
+               # A map of {offset: ByteCodeInst}
+   24:         table = OrderedDict(ByteCodeIter(code))
+   24:         self._compute_lineno(table, code)
+       
+   24:         self.func_id = func_id
+   24:         self.co_names = code.co_names
+   24:         self.co_varnames = code.co_varnames
+   24:         self.co_consts = code.co_consts
+   24:         self.co_cellvars = code.co_cellvars
+   24:         self.co_freevars = code.co_freevars
+       
+   24:         self.table = table
+   24:         self.labels = sorted(labels)
+       
+    2:     @classmethod
+    2:     def _compute_lineno(cls, table, code):
+               """
+               Compute the line numbers for all bytecode instructions.
+               """
+  165:         for offset, lineno in dis.findlinestarts(code):
+  141:             adj_offset = offset + _FIXED_OFFSET
+  141:             if adj_offset in table:
+  141:                 table[adj_offset].lineno = lineno
+               # Assign unfilled lineno
+               # Start with first bytecode's lineno
+   24:         known = code.co_firstlineno
+ 1819:         for inst in table.values():
+ 1795:             if inst.lineno >= 0:
+  141:                 known = inst.lineno
+                   else:
+ 1654:                 inst.lineno = known
+   24:         return table
+       
+    1:     def __iter__(self):
+               return iter(self.table.values())
+       
+    1:     def __getitem__(self, offset):
+ 7429:         return self.table[offset]
+       
+    1:     def __contains__(self, offset):
+               return offset in self.table
+       
+    1:     def dump(self):
+   24:         def label_marker(i):
+  818:             if i[1].offset in self.labels:
+   66:                 return '>'
+                   else:
+  752:                 return ' '
+       
+ 2685:         return '\n'.join('%s %10s\t%s' % ((label_marker(i),) + i)
+ 1819:                          for i in self.table.items()
+ 2613:                          if i[1].opname != "CACHE")
+       
+    2:     @classmethod
+    2:     def _compute_used_globals(cls, func, table, co_consts, co_names):
+               """
+               Compute the globals used by the function with the given
+               bytecode table.
+               """
+               d = {}
+               globs = func.__globals__
+               builtins = globs.get('__builtins__', utils.builtins)
+               if isinstance(builtins, ModuleType):
+                   builtins = builtins.__dict__
+               # Look for LOAD_GLOBALs in the bytecode
+               for inst in table.values():
+                   if inst.opname == 'LOAD_GLOBAL':
+                       name = co_names[_fix_LOAD_GLOBAL_arg(inst.arg)]
+                       if name not in d:
+                           try:
+                               value = globs[name]
+                           except KeyError:
+                               value = builtins[name]
+                           d[name] = value
+               # Add globals used by any nested code object
+               for co in co_consts:
+                   if isinstance(co, CodeType):
+                       subtable = OrderedDict(ByteCodeIter(co))
+                       d.update(cls._compute_used_globals(func, subtable,
+                                                          co.co_consts, co.co_names))
+               return d
+       
+    1:     def get_used_globals(self):
+               """
+               Get a {name: value} map of the globals used by this code
+               object and any nested code objects.
+               """
+               return self._compute_used_globals(self.func_id.func, self.table,
+                                                 self.co_consts, self.co_names)
+       
+       
+    1: def _fix_LOAD_GLOBAL_arg(arg):
+           if PYVERSION in ((3, 11), (3, 12)):
+               return arg >> 1
+           elif PYVERSION in ((3, 9), (3, 10)):
+               return arg
+           else:
+               raise NotImplementedError(PYVERSION)
+       
+       
+    2: class ByteCodePy311(_ByteCode):
+       
+    1:     def __init__(self, func_id):
+   24:         super().__init__(func_id)
+   24:         entries = dis.Bytecode(func_id.code).exception_entries
+   24:         self.exception_entries = tuple(map(self.fixup_eh, entries))
+       
+    2:     @staticmethod
+    2:     def fixup_eh(ent):
+               # Patch up the exception table offset
+               # because we add a NOP in _patched_opargs
+               out = dis._ExceptionTableEntry(
+                   start=ent.start + _FIXED_OFFSET, end=ent.end + _FIXED_OFFSET,
+                   target=ent.target + _FIXED_OFFSET,
+                   depth=ent.depth, lasti=ent.lasti,
+               )
+               return out
+       
+    1:     def find_exception_entry(self, offset):
+               """
+               Returns the exception entry for the given instruction offset
+               """
+ 1709:         candidates = []
+ 1709:         for ent in self.exception_entries:
+                   if ent.start <= offset < ent.end:
+                       candidates.append((ent.depth, ent))
+ 1709:         if candidates:
+                   ent = max(candidates)[1]
+                   return ent
+       
+       
+    2: class ByteCodePy312(ByteCodePy311):
+       
+    1:     def __init__(self, func_id):
+               super().__init__(func_id)
+       
+               # initialize lazy property
+               self._ordered_offsets = None
+       
+               # Fixup offsets for all exception entries.
+               entries = [self.fixup_eh(e) for e in
+                          dis.Bytecode(func_id.code).exception_entries
+                          ]
+       
+               # Remove exceptions, innermost ones first
+               # Can be done by using a stack
+               entries = self.remove_build_list_swap_pattern(entries)
+       
+               # If this is a generator, we need to skip any exception table entries
+               # that point to the exception handler with the highest offset.
+               if func_id.is_generator:
+                   # Get the exception handler with the highest offset.
+                   max_exception_target = max([e.target for e in entries])
+                   # Remove any exception table entries that point to that exception
+                   # handler.
+                   entries = [e for e in entries if e.target != max_exception_target]
+       
+               self.exception_entries = tuple(entries)
+       
+    2:     @property
+    2:     def ordered_offsets(self):
+               if not self._ordered_offsets:
+                   # Get an ordered list of offsets.
+                   self._ordered_offsets = [o for o in self.table]
+               return self._ordered_offsets
+       
+    1:     def remove_build_list_swap_pattern(self, entries):
+               """ Find the following bytecode pattern:
+       
+                   BUILD_{LIST, MAP, SET}
+                   SWAP(2)
+                   FOR_ITER
+                   ...
+                   END_FOR
+                   SWAP(2)
+       
+                   This pattern indicates that a list/dict/set comprehension has
+                   been inlined. In this case we can skip the exception blocks
+                   entirely along with the dead exceptions that it points to.
+                   A pair of exception that sandwiches these exception will
+                   also be merged into a single exception.
+               """
+       
+               def pop_and_merge_exceptions(entries: list,
+                                            entry_to_remove: _ExceptionTableEntry):
+                   lower_entry_idx = entries.index(entry_to_remove) - 1
+                   upper_entry_idx = entries.index(entry_to_remove) + 1
+       
+                   # Merge the upper and lower exceptions if possible.
+                   if lower_entry_idx >= 0 and upper_entry_idx < len(entries):
+                       lower_entry = entries[lower_entry_idx]
+                       upper_entry = entries[upper_entry_idx]
+                       if lower_entry.target == upper_entry.target:
+                           entries[lower_entry_idx] = _ExceptionTableEntry(
+                               lower_entry.start,
+                               upper_entry.end,
+                               lower_entry.target,
+                               lower_entry.depth,
+                               upper_entry.lasti)
+                           entries.remove(upper_entry)
+       
+                   # Remove the exception entry.
+                   entries.remove(entry_to_remove)
+                   # Remove dead exceptions, if any, that the entry above may point to.
+                   entries = [e for e in entries
+                              if not e.start == entry_to_remove.target]
+                   return entries
+       
+               work_remaining = True
+               while work_remaining:
+                   # Temporarily set work_remaining to False, if we find a pattern
+                   # then work is not complete, hence we set it again to True.
+                   work_remaining = False
+                   for entry in entries.copy():
+                       # Check start of pattern, three instructions.
+                       # Work out the index of the instruction.
+                       index = self.ordered_offsets.index(entry.start)
+                       # If there is a BUILD_{LIST, MAP, SET} instruction at this
+                       # location.
+                       curr_inst = self.table[self.ordered_offsets[index]]
+                       if curr_inst.opname not in ("BUILD_LIST",
+                                                   "BUILD_MAP",
+                                                   "BUILD_SET"):
+                           continue
+                       # Check if the BUILD_{LIST, MAP, SET} instruction is followed
+                       # by a SWAP(2).
+                       next_inst = self.table[self.ordered_offsets[index + 1]]
+                       if not next_inst.opname == "SWAP" and next_inst.arg == 2:
+                           continue
+                       next_inst = self.table[self.ordered_offsets[index + 2]]
+                       # Check if the SWAP is followed by a FOR_ITER
+                       if not next_inst.opname == "FOR_ITER":
+                           continue
+       
+                       # Check end of pattern, two instructions.
+                       # Check for the corresponding END_FOR, exception table end is
+                       # non-inclusive, so subtract one.
+                       index = self.ordered_offsets.index(entry.end)
+                       curr_inst = self.table[self.ordered_offsets[index - 1]]
+                       if not curr_inst.opname == "END_FOR":
+                           continue
+                       # END_FOR must be followed by SWAP(2)
+                       next_inst = self.table[self.ordered_offsets[index]]
+                       if not next_inst.opname == "SWAP" and next_inst.arg == 2:
+                           continue
+                       # If all conditions are met that means this exception entry
+                       # is for a list/dict/set comprehension and can be removed.
+                       # Also if there exist exception entries above and below this
+                       # entry pointing to the same target. those can be merged into
+                       # a single bigger exception block.
+                       entries = pop_and_merge_exceptions(entries, entry)
+                       work_remaining = True
+               return entries
+       
+       
+    1: if PYVERSION == (3, 11):
+    1:     ByteCode = ByteCodePy311
+       elif PYVERSION == (3, 12):
+           ByteCode = ByteCodePy312
+       elif PYVERSION < (3, 11):
+           ByteCode = _ByteCode
+       else:
+           raise NotImplementedError(PYVERSION)
+       
+       
+    2: class FunctionIdentity(serialize.ReduceMixin):
+    1:     """
+           A function's identity and metadata.
+       
+           Note this typically represents a function whose bytecode is
+           being compiled, not necessarily the top-level user function
+           (the two might be distinct).
+           """
+    1:     _unique_ids = itertools.count(1)
+       
+    2:     @classmethod
+    2:     def from_function(cls, pyfunc):
+               """
+               Create the FunctionIdentity of the given function.
+               """
+   24:         func = get_function_object(pyfunc)
+   24:         code = get_code_object(func)
+   24:         pysig = utils.pysignature(func)
+   24:         if not code:
+                   raise errors.ByteCodeSupportError(
+                       "%s does not provide its bytecode" % func)
+       
+   24:         try:
+   24:             func_qualname = func.__qualname__
+               except AttributeError:
+                   func_qualname = func.__name__
+       
+   24:         self = cls()
+   24:         self.func = func
+   24:         self.func_qualname = func_qualname
+   24:         self.func_name = func_qualname.split('.')[-1]
+   24:         self.code = code
+   24:         self.module = inspect.getmodule(func)
+   24:         self.modname = (utils._dynamic_modname
+   24:                         if self.module is None
+   20:                         else self.module.__name__)
+   24:         self.is_generator = inspect.isgeneratorfunction(func)
+   24:         self.pysig = pysig
+   24:         self.filename = code.co_filename
+   24:         self.firstlineno = code.co_firstlineno
+   24:         self.arg_count = len(pysig.parameters)
+   24:         self.arg_names = list(pysig.parameters)
+       
+               # Even the same function definition can be compiled into
+               # several different function objects with distinct closure
+               # variables, so we make sure to disambiguate using an unique id.
+   24:         uid = next(cls._unique_ids)
+   24:         self.unique_name = '{}${}'.format(self.func_qualname, uid)
+   24:         self.unique_id = uid
+       
+   24:         return self
+       
+    1:     def derive(self):
+               """Copy the object and increment the unique counter.
+               """
+               return self.from_function(self.func)
+       
+    1:     def _reduce_states(self):
+               """
+               NOTE: part of ReduceMixin protocol
+               """
+               return dict(pyfunc=self.func)
+       
+    2:     @classmethod
+    2:     def _rebuild(cls, pyfunc):
+               """
+               NOTE: part of ReduceMixin protocol
+               """
+               return cls.from_function(pyfunc)

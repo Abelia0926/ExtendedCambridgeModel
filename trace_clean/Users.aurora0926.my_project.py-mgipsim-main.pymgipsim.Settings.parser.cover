@@ -1,0 +1,79 @@
+    1: import argparse
+    1: import os
+    1: from ..Utilities.paths import default_settings_path
+    1: from ..Utilities.Scenario import load_scenario
+    1: from pymgipsim.Interface.Messages.parser_colors import color_help_text, color_group_header_text
+    1: from pymgipsim.Utilities.units_conversions_constants import UnitConversion, DEFAULT_RANDOM_SEED
+       
+       # with open(default_settings_path + "\\scenario_default.json","r") as f:
+       #     default_settings = scenario(**json.load(f))
+       # f.close()
+       
+    1: default_settings = load_scenario(os.path.join(default_settings_path, "scenario_default.json"))
+       
+    1: default_days = UnitConversion.time.convert_minutes_to_days(default_settings.settings.end_time - default_settings.settings.start_time)
+       
+    1: def generate_settings_parser(parent_parser = [], add_help = True, flags = [False, False, False, False]):
+       
+    2:     parser = argparse.ArgumentParser(
+    1:                                     prog = 'Simulation Settings',
+    1:                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    1:                                     parents = parent_parser,
+    1:                                     add_help = add_help,
+    1:                                     exit_on_error = False
+                                           )
+       
+    1:     settings_group = parser.add_argument_group(title = color_group_header_text('Simulation Settings'))
+       
+    2:     settings_group.add_argument(
+    1:                         '-d',
+    1:                         '--days',\
+    1:                         help = color_help_text('Set the number of days for simulation. This must be >= 1'),\
+    1:                         dest = 'number_of_days',\
+    1:                         default = default_days,\
+    1:                         type = int
+                               )
+       
+       
+       
+           ######################################################################################
+       
+    2:     settings_group.add_argument(
+    1:                         '-st',
+    1:                         '--sampling-time',\
+    1:                         help = color_help_text('Sampling time for the simulation. The sampling time must be > 0.'),\
+    1:                         dest = 'sampling_time',\
+    1:                         default = default_settings.settings.sampling_time,\
+    1:                         type = float
+                               )
+       
+    2:     settings_group.add_argument(
+    1:                         '-pr',
+    1:                         '--profiler',\
+    1:                         help = color_help_text('Run the profiler with interface_cli.'),\
+    1:                         dest = 'profile',
+    1:                         action='store_const', default=flags[1], const=not flags[1]
+                               )
+       
+    2:     settings_group.add_argument(
+    1:                         '-rs',
+    1:                         '--random_seed',\
+    1:                         help = color_help_text('Random seed for the sampling of the pdfs.'),\
+    1:                         dest = 'random_seed',
+    1:                         type = int,
+    1:                         default=DEFAULT_RANDOM_SEED
+                               )
+       
+    2:     settings_group.add_argument(
+    1:                         '-ms',
+    1:                         '--multi_scale',
+    1:                         help = color_help_text('Run simulation in multiscale mode.'),
+    1:                         dest = 'multi_scale',
+    1:                         action='store_const', default=flags[0], const=not flags[0]
+                               )
+       
+    1:     settings_group.add_argument('-npb',action='store_const', default=flags[3], const=not flags[3], dest = 'no_progress_bar', help = 'Turn off progress bars')
+       
+    1:     settings_group.add_argument('-np', '--no-print', action='store_const', default=flags[2], const=not flags[2], dest = 'no_print', help = 'Turn off printing')
+       
+    1:     return parser

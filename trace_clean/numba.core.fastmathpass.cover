@@ -1,0 +1,44 @@
+    1: from llvmlite import ir
+    1: from llvmlite.ir.transforms import Visitor, CallVisitor
+       
+       
+    2: class FastFloatBinOpVisitor(Visitor):
+    1:     """
+           A pass to add fastmath flag to float-binop instruction if they don't have
+           any flags.
+           """
+    1:     float_binops = frozenset(['fadd', 'fsub', 'fmul', 'fdiv', 'frem', 'fcmp'])
+       
+    1:     def __init__(self, flags):
+               self.flags = flags
+       
+    1:     def visit_Instruction(self, instr):
+               if instr.opname in self.float_binops:
+                   if not instr.flags:
+                       for flag in self.flags:
+                           instr.flags.append(flag)
+       
+       
+    2: class FastFloatCallVisitor(CallVisitor):
+    1:     """
+           A pass to change all float function calls to use fastmath.
+           """
+       
+    1:     def __init__(self, flags):
+               self.flags = flags
+       
+    1:     def visit_Call(self, instr):
+               # Add to any call that has float/double return type
+               if instr.type in (ir.FloatType(), ir.DoubleType()):
+                   for flag in self.flags:
+                       instr.fastmath.add(flag)
+       
+       
+    1: def rewrite_module(mod, options):
+           """
+           Rewrite the given LLVM module to use fastmath everywhere.
+           """
+           flags = options.flags
+           FastFloatBinOpVisitor(flags).visit(mod)
+           FastFloatCallVisitor(flags).visit(mod)
+       

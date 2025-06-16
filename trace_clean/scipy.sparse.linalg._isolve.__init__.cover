@@ -1,0 +1,20 @@
+    1: "Iterative Solvers for Sparse Linear Systems"
+       
+       #from info import __doc__
+    1: from .iterative import *
+    1: from .minres import minres
+    1: from .lgmres import lgmres
+    1: from .lsqr import lsqr
+    1: from .lsmr import lsmr
+    1: from ._gcrotmk import gcrotmk
+    1: from .tfqmr import tfqmr
+       
+    1: __all__ = [
+           'bicg', 'bicgstab', 'cg', 'cgs', 'gcrotmk', 'gmres',
+           'lgmres', 'lsmr', 'lsqr',
+           'minres', 'qmr', 'tfqmr'
+       ]
+       
+    1: from scipy._lib._testutils import PytestTester
+    1: test = PytestTester(__name__)
+    1: del PytestTester

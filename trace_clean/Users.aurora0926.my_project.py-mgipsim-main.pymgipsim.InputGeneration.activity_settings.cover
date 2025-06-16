@@ -1,0 +1,59 @@
+    1: from pymgipsim.InputGeneration.signal import Events
+    1: from pymgipsim.Utilities.Scenario import scenario
+    1: from pymgipsim.Probability.pdfs_samplers import sample_generator
+    1: from pymgipsim.Utilities.units_conversions_constants import UnitConversion
+    1: import numpy as np
+       
+       
+       
+    1: def activity_args_to_scenario(scenario_instance: scenario, args):
+    1:     scenario_instance.input_generation.running_start_time = args.running_start_time
+    1:     scenario_instance.input_generation.running_duration = args.running_duration
+    1:     scenario_instance.input_generation.running_incline = args.running_incline
+    1:     scenario_instance.input_generation.running_speed = args.running_speed
+    1:     scenario_instance.input_generation.cycling_start_time = args.cycling_start_time
+    1:     scenario_instance.input_generation.cycling_duration = args.cycling_duration
+    1:     scenario_instance.input_generation.cycling_power = args.cycling_power
+       
+    1: def time_str_to_float(times):
+    2:     transformed = times
+    2:     if type(times[0]) is str:
+   20:         transformed = [[float(x) for x in val.split(':')] for val in times]
+    8:         transformed = [val[0] * 60 + val[1] for val in transformed]
+    2:     return transformed
+       
+    1: def generate_activities(scenario_instance: scenario, args):
+    1:     number_of_days = int(UnitConversion.time.convert_minutes_to_days(scenario_instance.settings.end_time - scenario_instance.settings.start_time))
+    1:     no_subjects = scenario_instance.patient.number_of_subjects
+       
+    1:     running_start_time = scenario_instance.input_generation.running_start_time
+    1:     running_duration = scenario_instance.input_generation.running_duration
+    1:     running_incline = scenario_instance.input_generation.running_incline
+    1:     running_speed = scenario_instance.input_generation.running_speed
+    1:     cycling_start_time = scenario_instance.input_generation.cycling_start_time
+    1:     cycling_duration = scenario_instance.input_generation.cycling_duration
+    1:     cycling_power = scenario_instance.input_generation.cycling_power
+       
+       
+    1:     rng_generator = np.random.default_rng(scenario_instance.settings.random_seed)
+    1:     rng_generator.bit_generator.state = scenario_instance.settings.random_state
+    1:     running_start_time = sample_generator(time_str_to_float(running_start_time), "uniform", (no_subjects, number_of_days), rng_generator)[-1]
+    1:     running_start_time += UnitConversion.time.calculate_time_adjustment_array(running_start_time.shape)
+    1:     cycling_start_time = sample_generator(time_str_to_float(cycling_start_time), "uniform", (no_subjects, number_of_days), rng_generator)[-1]
+    1:     cycling_start_time += UnitConversion.time.calculate_time_adjustment_array(cycling_start_time.shape)
+       
+    1:     running_duration = sample_generator(running_duration, "uniform", (no_subjects, number_of_days), rng_generator)[-1]
+    1:     cycling_duration = sample_generator(cycling_duration, "uniform", (no_subjects, number_of_days), rng_generator)[-1]
+       
+    1:     cycling_power = sample_generator(cycling_power, "uniform", (no_subjects, number_of_days), rng_generator)[-1]
+    1:     cycling_power = Events(start_time=cycling_start_time, duration=cycling_duration, magnitude=cycling_power).as_dict()
+       
+    1:     running_speed = sample_generator(running_speed, "uniform", (no_subjects, number_of_days), rng_generator)[-1]
+    1:     running_incline = sample_generator(running_incline, "uniform", (no_subjects, number_of_days), rng_generator)[-1]
+    1:     running_speed = Events(start_time=running_start_time, duration=running_duration, magnitude=running_speed).as_dict()
+    1:     running_incline = Events(start_time=running_start_time, duration=running_duration, magnitude=running_incline).as_dict()
+       
+    1:     scenario_instance.settings.random_state = rng_generator.bit_generator.state
+       
+       
+    1:     return running_speed, running_incline, cycling_power

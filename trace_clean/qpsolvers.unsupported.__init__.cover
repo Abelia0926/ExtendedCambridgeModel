@@ -1,0 +1,66 @@
+       #!/usr/bin/env python
+       # -*- coding: utf-8 -*-
+       #
+       # SPDX-License-Identifier: LGPL-3.0-or-later
+       # Copyright 2016-2023 Stéphane Caron and the qpsolvers contributors
+       
+    1: """Import unsupported QP solvers."""
+       
+    1: from typing import Any, Callable, Dict, List, Optional
+       
+    1: from numpy import ndarray
+       
+    1: from ..problem import Problem
+    1: from ..solution import Solution
+       
+    1: available_solvers: List[str] = []
+    1: dense_solvers: List[str] = []
+    1: solve_function: Dict[str, Any] = {}
+    1: sparse_solvers: List[str] = []
+       
+       
+       # NPPro
+       # =====
+       
+    2: nppro_solve_problem: Optional[
+    2:     Callable[
+    2:         [
+    1:             Problem,
+    1:             Optional[ndarray],
+               ],
+    1:         Solution,
+           ]
+    1: ] = None
+       
+    2: nppro_solve_qp: Optional[
+    2:     Callable[
+    2:         [
+    1:             ndarray,
+    1:             ndarray,
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+    1:             Optional[ndarray],
+               ],
+    1:         Optional[ndarray],
+           ]
+    1: ] = None
+       
+    1: try:
+    1:     from .nppro_ import nppro_solve_problem, nppro_solve_qp
+       
+           solve_function["nppro"] = nppro_solve_problem
+           available_solvers.append("nppro")
+           dense_solvers.append("nppro")
+    1: except ImportError:
+    1:     pass
+       
+       
+    1: __all__ = [
+           "available_solvers",
+           "nppro_solve_qp",
+           "solve_function",
+       ]

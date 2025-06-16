@@ -1,0 +1,129 @@
+       # defusedxml
+       #
+       # Copyright (c) 2013 by Christian Heimes <christian@python.org>
+       # Licensed to PSF under a Contributor Agreement.
+       # See https://www.python.org/psf/license for licensing details.
+    1: """Common constants, exceptions and helpe functions
+       """
+    1: import sys
+    1: import xml.parsers.expat
+       
+    1: PY3 = sys.version_info[0] == 3
+       
+       # Fail early when pyexpat is not installed correctly
+    1: if not hasattr(xml.parsers.expat, "ParserCreate"):
+           raise ImportError("pyexpat")  # pragma: no cover
+       
+       
+    2: class DefusedXmlException(ValueError):
+    1:     """Base exception"""
+       
+    1:     def __repr__(self):
+               return str(self)
+       
+       
+    2: class DTDForbidden(DefusedXmlException):
+    1:     """Document type definition is forbidden"""
+       
+    1:     def __init__(self, name, sysid, pubid):
+               super(DTDForbidden, self).__init__()
+               self.name = name
+               self.sysid = sysid
+               self.pubid = pubid
+       
+    1:     def __str__(self):
+               tpl = "DTDForbidden(name='{}', system_id={!r}, public_id={!r})"
+               return tpl.format(self.name, self.sysid, self.pubid)
+       
+       
+    2: class EntitiesForbidden(DefusedXmlException):
+    1:     """Entity definition is forbidden"""
+       
+    1:     def __init__(self, name, value, base, sysid, pubid, notation_name):
+               super(EntitiesForbidden, self).__init__()
+               self.name = name
+               self.value = value
+               self.base = base
+               self.sysid = sysid
+               self.pubid = pubid
+               self.notation_name = notation_name
+       
+    1:     def __str__(self):
+               tpl = "EntitiesForbidden(name='{}', system_id={!r}, public_id={!r})"
+               return tpl.format(self.name, self.sysid, self.pubid)
+       
+       
+    2: class ExternalReferenceForbidden(DefusedXmlException):
+    1:     """Resolving an external reference is forbidden"""
+       
+    1:     def __init__(self, context, base, sysid, pubid):
+               super(ExternalReferenceForbidden, self).__init__()
+               self.context = context
+               self.base = base
+               self.sysid = sysid
+               self.pubid = pubid
+       
+    1:     def __str__(self):
+               tpl = "ExternalReferenceForbidden(system_id='{}', public_id={})"
+               return tpl.format(self.sysid, self.pubid)
+       
+       
+    2: class NotSupportedError(DefusedXmlException):
+    1:     """The operation is not supported"""
+       
+       
+    1: def _apply_defusing(defused_mod):
+           assert defused_mod is sys.modules[defused_mod.__name__]
+           stdlib_name = defused_mod.__origin__
+           __import__(stdlib_name, {}, {}, ["*"])
+           stdlib_mod = sys.modules[stdlib_name]
+           stdlib_names = set(dir(stdlib_mod))
+           for name, obj in vars(defused_mod).items():
+               if name.startswith("_") or name not in stdlib_names:
+                   continue
+               setattr(stdlib_mod, name, obj)
+           return stdlib_mod
+       
+       
+    1: def _generate_etree_functions(DefusedXMLParser, _TreeBuilder, _parse, _iterparse):
+           """Factory for functions needed by etree, dependent on whether
+           cElementTree or ElementTree is used."""
+       
+    1:     def parse(source, parser=None, forbid_dtd=False, forbid_entities=True, forbid_external=True):
+               if parser is None:
+                   parser = DefusedXMLParser(
+                       target=_TreeBuilder(),
+                       forbid_dtd=forbid_dtd,
+                       forbid_entities=forbid_entities,
+                       forbid_external=forbid_external,
+                   )
+               return _parse(source, parser)
+       
+    1:     def iterparse(
+               source,
+    1:         events=None,
+    1:         parser=None,
+    1:         forbid_dtd=False,
+    1:         forbid_entities=True,
+    1:         forbid_external=True,
+           ):
+               if parser is None:
+                   parser = DefusedXMLParser(
+                       target=_TreeBuilder(),
+                       forbid_dtd=forbid_dtd,
+                       forbid_entities=forbid_entities,
+                       forbid_external=forbid_external,
+                   )
+               return _iterparse(source, events, parser)
+       
+    1:     def fromstring(text, forbid_dtd=False, forbid_entities=True, forbid_external=True):
+               parser = DefusedXMLParser(
+                   target=_TreeBuilder(),
+                   forbid_dtd=forbid_dtd,
+                   forbid_entities=forbid_entities,
+                   forbid_external=forbid_external,
+               )
+               parser.feed(text)
+               return parser.close()
+       
+    1:     return parse, iterparse, fromstring

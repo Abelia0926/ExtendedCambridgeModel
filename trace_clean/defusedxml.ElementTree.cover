@@ -1,0 +1,154 @@
+       # defusedxml
+       #
+       # Copyright (c) 2013 by Christian Heimes <christian@python.org>
+       # Licensed to PSF under a Contributor Agreement.
+       # See https://www.python.org/psf/license for licensing details.
+    1: """Defused xml.etree.ElementTree facade
+       """
+    1: from __future__ import print_function, absolute_import
+       
+    1: import sys
+    1: import warnings
+    1: from xml.etree.ElementTree import ParseError
+    1: from xml.etree.ElementTree import TreeBuilder as _TreeBuilder
+    1: from xml.etree.ElementTree import parse as _parse
+    1: from xml.etree.ElementTree import tostring
+       
+    1: from .common import PY3
+       
+    1: if PY3:
+    1:     import importlib
+       else:
+           from xml.etree.ElementTree import XMLParser as _XMLParser
+           from xml.etree.ElementTree import iterparse as _iterparse
+       
+       
+    1: from .common import (
+           DTDForbidden,
+           EntitiesForbidden,
+           ExternalReferenceForbidden,
+           _generate_etree_functions,
+       )
+       
+    1: __origin__ = "xml.etree.ElementTree"
+       
+       
+    1: def _get_py3_cls():
+           """Python 3.3 hides the pure Python code but defusedxml requires it.
+       
+           The code is based on test.support.import_fresh_module().
+           """
+    1:     pymodname = "xml.etree.ElementTree"
+    1:     cmodname = "_elementtree"
+       
+    1:     pymod = sys.modules.pop(pymodname, None)
+    1:     cmod = sys.modules.pop(cmodname, None)
+       
+    1:     sys.modules[cmodname] = None
+    1:     try:
+    1:         pure_pymod = importlib.import_module(pymodname)
+           finally:
+               # restore module
+    1:         sys.modules[pymodname] = pymod
+    1:         if cmod is not None:
+    1:             sys.modules[cmodname] = cmod
+               else:
+                   sys.modules.pop(cmodname, None)
+               # restore attribute on original package
+    1:         etree_pkg = sys.modules["xml.etree"]
+    1:         if pymod is not None:
+    1:             etree_pkg.ElementTree = pymod
+               elif hasattr(etree_pkg, "ElementTree"):
+                   del etree_pkg.ElementTree
+       
+    1:     _XMLParser = pure_pymod.XMLParser
+    1:     _iterparse = pure_pymod.iterparse
+           # patch pure module to use ParseError from C extension
+    1:     pure_pymod.ParseError = ParseError
+       
+    1:     return _XMLParser, _iterparse
+       
+       
+    1: if PY3:
+    1:     _XMLParser, _iterparse = _get_py3_cls()
+       
+       
+    1: _sentinel = object()
+       
+       
+    2: class DefusedXMLParser(_XMLParser):
+    1:     def __init__(
+               self,
+    1:         html=_sentinel,
+    1:         target=None,
+    1:         encoding=None,
+    1:         forbid_dtd=False,
+    1:         forbid_entities=True,
+    1:         forbid_external=True,
+           ):
+               # Python 2.x old style class
+               _XMLParser.__init__(self, target=target, encoding=encoding)
+               if html is not _sentinel:
+                   # the 'html' argument has been deprecated and ignored in all
+                   # supported versions of Python. Python 3.8 finally removed it.
+                   if html:
+                       raise TypeError("'html=True' is no longer supported.")
+                   else:
+                       warnings.warn(
+                           "'html' keyword argument is no longer supported. Pass "
+                           "in arguments as keyword arguments.",
+                           category=DeprecationWarning,
+                       )
+       
+               self.forbid_dtd = forbid_dtd
+               self.forbid_entities = forbid_entities
+               self.forbid_external = forbid_external
+               if PY3:
+                   parser = self.parser
+               else:
+                   parser = self._parser
+               if self.forbid_dtd:
+                   parser.StartDoctypeDeclHandler = self.defused_start_doctype_decl
+               if self.forbid_entities:
+                   parser.EntityDeclHandler = self.defused_entity_decl
+                   parser.UnparsedEntityDeclHandler = self.defused_unparsed_entity_decl
+               if self.forbid_external:
+                   parser.ExternalEntityRefHandler = self.defused_external_entity_ref_handler
+       
+    1:     def defused_start_doctype_decl(self, name, sysid, pubid, has_internal_subset):
+               raise DTDForbidden(name, sysid, pubid)
+       
+    1:     def defused_entity_decl(
+               self, name, is_parameter_entity, value, base, sysid, pubid, notation_name
+           ):
+               raise EntitiesForbidden(name, value, base, sysid, pubid, notation_name)
+       
+    1:     def defused_unparsed_entity_decl(self, name, base, sysid, pubid, notation_name):
+               # expat 1.2
+               raise EntitiesForbidden(name, None, base, sysid, pubid, notation_name)  # pragma: no cover
+       
+    1:     def defused_external_entity_ref_handler(self, context, base, sysid, pubid):
+               raise ExternalReferenceForbidden(context, base, sysid, pubid)
+       
+       
+       # aliases
+       # XMLParse is a typo, keep it for backwards compatibility
+    1: XMLTreeBuilder = XMLParse = XMLParser = DefusedXMLParser
+       
+    2: parse, iterparse, fromstring = _generate_etree_functions(
+    1:     DefusedXMLParser, _TreeBuilder, _parse, _iterparse
+       )
+    1: XML = fromstring
+       
+       
+    1: __all__ = [
+           "ParseError",
+           "XML",
+           "XMLParse",
+           "XMLParser",
+           "XMLTreeBuilder",
+           "fromstring",
+           "iterparse",
+           "parse",
+           "tostring",
+       ]

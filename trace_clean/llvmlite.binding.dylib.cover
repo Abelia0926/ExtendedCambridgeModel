@@ -1,0 +1,45 @@
+    1: from ctypes import c_void_p, c_char_p, c_bool, POINTER
+       
+    1: from llvmlite.binding import ffi
+    1: from llvmlite.binding.common import _encode_string
+       
+       
+    1: def address_of_symbol(name):
+           """
+           Get the in-process address of symbol named *name*.
+           An integer is returned, or None if the symbol isn't found.
+           """
+           return ffi.lib.LLVMPY_SearchAddressOfSymbol(_encode_string(name))
+       
+       
+    1: def add_symbol(name, address):
+           """
+           Register the *address* of global symbol *name*.  This will make
+           it usable (e.g. callable) from LLVM-compiled functions.
+           """
+  309:     ffi.lib.LLVMPY_AddSymbol(_encode_string(name), c_void_p(address))
+       
+       
+    1: def load_library_permanently(filename):
+           """
+           Load an external library
+           """
+    2:     with ffi.OutputString() as outerr:
+    2:         if ffi.lib.LLVMPY_LoadLibraryPermanently(
+    1:                 _encode_string(filename), outerr):
+    1:             raise RuntimeError(str(outerr))
+       
+       # ============================================================================
+       # FFI
+       
+       
+    1: ffi.lib.LLVMPY_AddSymbol.argtypes = [
+    1:     c_char_p,
+    1:     c_void_p,
+       ]
+       
+    1: ffi.lib.LLVMPY_SearchAddressOfSymbol.argtypes = [c_char_p]
+    1: ffi.lib.LLVMPY_SearchAddressOfSymbol.restype = c_void_p
+       
+    1: ffi.lib.LLVMPY_LoadLibraryPermanently.argtypes = [c_char_p, POINTER(c_char_p)]
+    1: ffi.lib.LLVMPY_LoadLibraryPermanently.restype = c_bool

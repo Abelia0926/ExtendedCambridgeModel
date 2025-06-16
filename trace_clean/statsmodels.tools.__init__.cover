@@ -1,0 +1,6 @@
+    1: from .tools import add_constant, categorical
+    1: from statsmodels.tools._testing import PytestTester
+       
+    1: __all__ = ['test', 'add_constant', 'categorical']
+       
+    1: test = PytestTester()

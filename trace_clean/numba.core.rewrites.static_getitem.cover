@@ -1,0 +1,175 @@
+    1: from numba.core import errors, ir, types
+    1: from numba.core.rewrites import register_rewrite, Rewrite
+       
+       
+    3: @register_rewrite('before-inference')
+    2: class RewriteConstGetitems(Rewrite):
+    1:     """
+           Rewrite IR expressions of the kind `getitem(value=arr, index=$constXX)`
+           where `$constXX` is a known constant as
+           `static_getitem(value=arr, index=<constant value>)`.
+           """
+       
+    1:     def match(self, func_ir, block, typemap, calltypes):
+  103:         self.getitems = getitems = {}
+  103:         self.block = block
+               # Detect all getitem expressions and find which ones can be
+               # rewritten
+  127:         for expr in block.find_exprs(op='getitem'):
+   24:             if expr.op == 'getitem':
+   24:                 try:
+   24:                     const = func_ir.infer_constant(expr.index)
+   16:                 except errors.ConstantInferenceError:
+   16:                     continue
+    8:                 getitems[expr] = const
+       
+  103:         return len(getitems) > 0
+       
+    1:     def apply(self):
+               """
+               Rewrite all matching getitems as static_getitems.
+               """
+    8:         new_block = self.block.copy()
+    8:         new_block.clear()
+  146:         for inst in self.block.body:
+  138:             if isinstance(inst, ir.Assign):
+  130:                 expr = inst.value
+  130:                 if expr in self.getitems:
+    8:                     const = self.getitems[expr]
+   16:                     new_expr = ir.Expr.static_getitem(value=expr.value,
+    8:                                                       index=const,
+    8:                                                       index_var=expr.index,
+    8:                                                       loc=expr.loc)
+   16:                     inst = ir.Assign(value=new_expr, target=inst.target,
+    8:                                      loc=inst.loc)
+  138:             new_block.append(inst)
+    8:         return new_block
+       
+       
+    3: @register_rewrite('after-inference')
+    2: class RewriteStringLiteralGetitems(Rewrite):
+    1:     """
+           Rewrite IR expressions of the kind `getitem(value=arr, index=$XX)`
+           where `$XX` is a StringLiteral value as
+           `static_getitem(value=arr, index=<literal value>)`.
+           """
+       
+    1:     def match(self, func_ir, block, typemap, calltypes):
+               """
+               Detect all getitem expressions and find which ones have
+               string literal indexes
+               """
+   95:         self.getitems = getitems = {}
+   95:         self.block = block
+   95:         self.calltypes = calltypes
+  107:         for expr in block.find_exprs(op='getitem'):
+   12:             if expr.op == 'getitem':
+   12:                 index_ty = typemap[expr.index.name]
+   12:                 if isinstance(index_ty, types.StringLiteral):
+                           getitems[expr] = (expr.index, index_ty.literal_value)
+       
+   95:         return len(getitems) > 0
+       
+    1:     def apply(self):
+               """
+               Rewrite all matching getitems as static_getitems where the index
+               is the literal value of the string.
+               """
+               new_block = ir.Block(self.block.scope, self.block.loc)
+               for inst in self.block.body:
+                   if isinstance(inst, ir.Assign):
+                       expr = inst.value
+                       if expr in self.getitems:
+                           const, lit_val = self.getitems[expr]
+                           new_expr = ir.Expr.static_getitem(value=expr.value,
+                                                             index=lit_val,
+                                                             index_var=expr.index,
+                                                             loc=expr.loc)
+                           self.calltypes[new_expr] = self.calltypes[expr]
+                           inst = ir.Assign(value=new_expr, target=inst.target,
+                                            loc=inst.loc)
+                   new_block.append(inst)
+               return new_block
+       
+       
+    3: @register_rewrite('after-inference')
+    2: class RewriteStringLiteralSetitems(Rewrite):
+    1:     """
+           Rewrite IR expressions of the kind `setitem(value=arr, index=$XX, value=)`
+           where `$XX` is a StringLiteral value as
+           `static_setitem(value=arr, index=<literal value>, value=)`.
+           """
+       
+    1:     def match(self, func_ir, block, typemap, calltypes):
+               """
+               Detect all setitem expressions and find which ones have
+               string literal indexes
+               """
+   95:         self.setitems = setitems = {}
+   95:         self.block = block
+   95:         self.calltypes = calltypes
+  101:         for inst in block.find_insts(ir.SetItem):
+    6:             index_ty = typemap[inst.index.name]
+    6:             if isinstance(index_ty, types.StringLiteral):
+                       setitems[inst] = (inst.index, index_ty.literal_value)
+       
+   95:         return len(setitems) > 0
+       
+    1:     def apply(self):
+               """
+               Rewrite all matching setitems as static_setitems where the index
+               is the literal value of the string.
+               """
+               new_block = ir.Block(self.block.scope, self.block.loc)
+               for inst in self.block.body:
+                   if isinstance(inst, ir.SetItem):
+                       if inst in self.setitems:
+                           const, lit_val = self.setitems[inst]
+                           new_inst = ir.StaticSetItem(target=inst.target,
+                                                       index=lit_val,
+                                                       index_var=inst.index,
+                                                       value=inst.value,
+                                                       loc=inst.loc)
+                           self.calltypes[new_inst] = self.calltypes[inst]
+                           inst = new_inst
+                   new_block.append(inst)
+               return new_block
+       
+       
+    3: @register_rewrite('before-inference')
+    2: class RewriteConstSetitems(Rewrite):
+    1:     """
+           Rewrite IR statements of the kind `setitem(target=arr, index=$constXX, ...)`
+           where `$constXX` is a known constant as
+           `static_setitem(target=arr, index=<constant value>, ...)`.
+           """
+       
+    1:     def match(self, func_ir, block, typemap, calltypes):
+   95:         self.setitems = setitems = {}
+   95:         self.block = block
+               # Detect all setitem statements and find which ones can be
+               # rewritten
+  101:         for inst in block.find_insts(ir.SetItem):
+    6:             try:
+    6:                 const = func_ir.infer_constant(inst.index)
+    6:             except errors.ConstantInferenceError:
+    6:                 continue
+                   setitems[inst] = const
+       
+   95:         return len(setitems) > 0
+       
+    1:     def apply(self):
+               """
+               Rewrite all matching setitems as static_setitems.
+               """
+               new_block = self.block.copy()
+               new_block.clear()
+               for inst in self.block.body:
+                   if inst in self.setitems:
+                       const = self.setitems[inst]
+                       new_inst = ir.StaticSetItem(inst.target, const,
+                                                   inst.index, inst.value, inst.loc)
+                       new_block.append(new_inst)
+                   else:
+                       new_block.append(inst)
+               return new_block

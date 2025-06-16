@@ -1,0 +1,98 @@
+    1: from collections import defaultdict
+       
+    1: from numba.core import config
+       
+       
+    2: class Rewrite(object):
+    1:     '''Defines the abstract base class for Numba rewrites.
+           '''
+       
+    1:     def __init__(self, state=None):
+               '''Constructor for the Rewrite class.
+               '''
+  240:         pass
+       
+    1:     def match(self, func_ir, block, typemap, calltypes):
+               '''Overload this method to check an IR block for matching terms in the
+               rewrite.
+               '''
+               return False
+       
+    1:     def apply(self):
+               '''Overload this method to return a rewritten IR basic block when a
+               match has been found.
+               '''
+               raise NotImplementedError("Abstract Rewrite.apply() called!")
+       
+       
+    2: class RewriteRegistry(object):
+    1:     '''Defines a registry for Numba rewrites.
+           '''
+    1:     _kinds = frozenset(['before-inference', 'after-inference'])
+       
+    1:     def __init__(self):
+               '''Constructor for the rewrite registry.  Initializes the rewrites
+               member to an empty list.
+               '''
+    1:         self.rewrites = defaultdict(list)
+       
+    1:     def register(self, kind):
+               """
+               Decorator adding a subclass of Rewrite to the registry for
+               the given *kind*.
+               """
+   10:         if kind not in self._kinds:
+                   raise KeyError("invalid kind %r" % (kind,))
+   10:         def do_register(rewrite_cls):
+   10:             if not issubclass(rewrite_cls, Rewrite):
+                       raise TypeError('{0} is not a subclass of Rewrite'.format(
+                           rewrite_cls))
+   10:             self.rewrites[kind].append(rewrite_cls)
+   10:             return rewrite_cls
+   10:         return do_register
+       
+    1:     def apply(self, kind, state):
+               '''Given a pipeline and a dictionary of basic blocks, exhaustively
+               attempt to apply all registered rewrites to all basic blocks.
+               '''
+   48:         assert kind in self._kinds
+   48:         blocks = state.func_ir.blocks
+   48:         old_blocks = blocks.copy()
+  288:         for rewrite_cls in self.rewrites[kind]:
+                   # Exhaustively apply a rewrite until it stops matching.
+  240:             rewrite = rewrite_cls(state)
+  240:             work_list = list(blocks.items())
+ 1203:             while work_list:
+  963:                 key, block = work_list.pop()
+ 1926:                 matches = rewrite.match(state.func_ir, block, state.typemap,
+  963:                                         state.calltypes)
+  963:                 if matches:
+   13:                     if config.DEBUG or config.DUMP_IR:
+                               print("_" * 70)
+                               print("REWRITING (%s):" % rewrite_cls.__name__)
+                               block.dump()
+                               print("_" * 60)
+   13:                     new_block = rewrite.apply()
+   13:                     blocks[key] = new_block
+   13:                     work_list.append((key, new_block))
+   13:                     if config.DEBUG or config.DUMP_IR:
+                               new_block.dump()
+                               print("_" * 70)
+               # If any blocks were changed, perform a sanity check.
+  238:         for key, block in blocks.items():
+  190:             if block != old_blocks[key]:
+   13:                 block.verify()
+       
+               # Some passes, e.g. _inline_const_arraycall are known to occasionally
+               # do invalid things WRT ir.Del, others, e.g. RewriteArrayExprs do valid
+               # things with ir.Del, but the placement is not optimal. The lines below
+               # fix-up the IR so that ref counts are valid and optimally placed,
+               # see #4093 for context. This has to be run here opposed to in
+               # apply() as the CFG needs computing so full IR is needed.
+   48:         from numba.core import postproc
+   48:         post_proc = postproc.PostProcessor(state.func_ir)
+   48:         post_proc.run()
+       
+       
+    1: rewrite_registry = RewriteRegistry()
+    1: register_rewrite = rewrite_registry.register

@@ -1,0 +1,391 @@
+    1: """
+       Helper functions for managing the Matplotlib API.
+       
+       This documentation is only relevant for Matplotlib developers, not for users.
+       
+       .. warning::
+       
+           This module and its submodules are for internal use only.  Do not use them
+           in your own code.  We may change the API at any time with no warning.
+       
+       """
+       
+    1: import functools
+    1: import itertools
+    1: import pathlib
+    1: import re
+    1: import sys
+    1: import warnings
+       
+    1: from .deprecation import (  # noqa: F401
+           deprecated, warn_deprecated,
+           rename_parameter, delete_parameter, make_keyword_only,
+           deprecate_method_override, deprecate_privatize_attribute,
+           suppress_matplotlib_deprecation_warning,
+           MatplotlibDeprecationWarning)
+       
+       
+    2: class classproperty:
+    1:     """
+           Like `property`, but also triggers on access via the class, and it is the
+           *class* that's passed as argument.
+       
+           Examples
+           --------
+           ::
+       
+               class C:
+                   @classproperty
+                   def foo(cls):
+                       return cls.__name__
+       
+               assert C.foo == "C"
+           """
+       
+    1:     def __init__(self, fget, fset=None, fdel=None, doc=None):
+    6:         self._fget = fget
+    6:         if fset is not None or fdel is not None:
+                   raise ValueError('classproperty only implements fget.')
+    6:         self.fset = fset
+    6:         self.fdel = fdel
+               # docs are ignored for now
+    6:         self._doc = doc
+       
+    1:     def __get__(self, instance, owner):
+    9:         return self._fget(owner)
+       
+    2:     @property
+    2:     def fget(self):
+    4:         return self._fget
+       
+       
+       # In the following check_foo() functions, the first parameter is positional-only to make
+       # e.g. `_api.check_isinstance([...], types=foo)` work.
+       
+    1: def check_isinstance(types, /, **kwargs):
+           """
+           For each *key, value* pair in *kwargs*, check that *value* is an instance
+           of one of *types*; if not, raise an appropriate TypeError.
+       
+           As a special case, a ``None`` entry in *types* is treated as NoneType.
+       
+           Examples
+           --------
+           >>> _api.check_isinstance((SomeClass, None), arg=arg)
+           """
+ 4595:     none_type = type(None)
+ 6052:     types = ((types,) if isinstance(types, type) else
+ 1457:              (none_type,) if types is None else
+ 5851:              tuple(none_type if tp is None else tp for tp in types))
+       
+ 4595:     def type_name(tp):
+               return ("None" if tp is none_type
+                       else tp.__qualname__ if tp.__module__ == "builtins"
+                       else f"{tp.__module__}.{tp.__qualname__}")
+       
+ 9190:     for k, v in kwargs.items():
+ 4595:         if not isinstance(v, types):
+                   names = [*map(type_name, types)]
+                   if "None" in names:  # Move it to the end for better wording.
+                       names.remove("None")
+                       names.append("None")
+                   raise TypeError(
+                       "{!r} must be an instance of {}, not a {}".format(
+                           k,
+                           ", ".join(names[:-1]) + " or " + names[-1]
+                           if len(names) > 1 else names[0],
+                           type_name(type(v))))
+       
+       
+    1: def check_in_list(values, /, *, _print_supported_values=True, **kwargs):
+           """
+           For each *key, value* pair in *kwargs*, check that *value* is in *values*;
+           if not, raise an appropriate ValueError.
+       
+           Parameters
+           ----------
+           values : iterable
+               Sequence of values to check on.
+           _print_supported_values : bool, default: True
+               Whether to print *values* when raising ValueError.
+           **kwargs : dict
+               *key, value* pairs as keyword arguments to find in *values*.
+       
+           Raises
+           ------
+           ValueError
+               If any *value* in *kwargs* is not found in *values*.
+       
+           Examples
+           --------
+           >>> _api.check_in_list(["foo", "bar"], arg=arg, other_arg=other_arg)
+           """
+31254:     if not kwargs:
+               raise TypeError("No argument to check!")
+62510:     for key, val in kwargs.items():
+31256:         if val not in values:
+                   msg = f"{val!r} is not a valid value for {key}"
+                   if _print_supported_values:
+                       msg += f"; supported values are {', '.join(map(repr, values))}"
+                   raise ValueError(msg)
+       
+       
+    1: def check_shape(shape, /, **kwargs):
+           """
+           For each *key, value* pair in *kwargs*, check that *value* has the shape *shape*;
+           if not, raise an appropriate ValueError.
+       
+           *None* in the shape is treated as a "free" size that can have any length.
+           e.g. (None, 2) -> (N, 2)
+       
+           The values checked must be numpy arrays.
+       
+           Examples
+           --------
+           To check for (N, 2) shaped arrays
+       
+           >>> _api.check_shape((None, 2), arg=arg, other_arg=other_arg)
+           """
+ 3756:     for k, v in kwargs.items():
+ 1878:         data_shape = v.shape
+       
+ 3756:         if (len(data_shape) != len(shape)
+ 7515:                 or any(s != t and t is not None for s, t in zip(data_shape, shape))):
+                   dim_labels = iter(itertools.chain(
+                       'NMLKJIH',
+                       (f"D{i}" for i in itertools.count())))
+                   text_shape = ", ".join([str(n) if n is not None else next(dim_labels)
+                                           for n in shape[::-1]][::-1])
+                   if len(shape) == 1:
+                       text_shape += ","
+       
+                   raise ValueError(
+                       f"{k!r} must be {len(shape)}D with shape ({text_shape}), "
+                       f"but your input has shape {v.shape}"
+                   )
+       
+       
+    1: def check_getitem(mapping, /, **kwargs):
+           """
+           *kwargs* must consist of a single *key, value* pair.  If *key* is in
+           *mapping*, return ``mapping[value]``; else, raise an appropriate
+           ValueError.
+       
+           Examples
+           --------
+           >>> _api.check_getitem({"foo": "bar"}, arg=arg)
+           """
+  174:     if len(kwargs) != 1:
+               raise ValueError("check_getitem takes a single keyword argument")
+  174:     (k, v), = kwargs.items()
+  174:     try:
+  174:         return mapping[v]
+           except KeyError:
+               raise ValueError(
+                   f"{v!r} is not a valid value for {k}; supported values are "
+                   f"{', '.join(map(repr, mapping))}") from None
+       
+       
+    1: def caching_module_getattr(cls):
+           """
+           Helper decorator for implementing module-level ``__getattr__`` as a class.
+       
+           This decorator must be used at the module toplevel as follows::
+       
+               @caching_module_getattr
+               class __getattr__:  # The class *must* be named ``__getattr__``.
+                   @property  # Only properties are taken into account.
+                   def name(self): ...
+       
+           The ``__getattr__`` class will be replaced by a ``__getattr__``
+           function such that trying to access ``name`` on the module will
+           resolve the corresponding property (which may be decorated e.g. with
+           ``_api.deprecated`` for deprecating module globals).  The properties are
+           all implicitly cached.  Moreover, a suitable AttributeError is generated
+           and raised if no property with the given name exists.
+           """
+       
+    2:     assert cls.__name__ == "__getattr__"
+           # Don't accidentally export cls dunders.
+   30:     props = {name: prop for name, prop in vars(cls).items()
+   13:              if isinstance(prop, property)}
+    2:     instance = cls()
+       
+    4:     @functools.cache
+    4:     def __getattr__(name):
+   24:         if name in props:
+    1:             return props[name].__get__(instance)
+   46:         raise AttributeError(
+   23:             f"module {cls.__module__!r} has no attribute {name!r}")
+       
+    2:     return __getattr__
+       
+       
+    1: def define_aliases(alias_d, cls=None):
+           """
+           Class decorator for defining property aliases.
+       
+           Use as ::
+       
+               @_api.define_aliases({"property": ["alias", ...], ...})
+               class C: ...
+       
+           For each property, if the corresponding ``get_property`` is defined in the
+           class so far, an alias named ``get_alias`` will be defined; the same will
+           be done for setters.  If neither the getter nor the setter exists, an
+           exception will be raised.
+       
+           The alias map is stored as the ``_alias_map`` attribute on the class and
+           can be used by `.normalize_kwargs` (which assumes that higher priority
+           aliases come last).
+           """
+   12:     if cls is None:  # Return the actual class decorator.
+    6:         return functools.partial(define_aliases, alias_d)
+       
+    6:     def make_alias(name):  # Enforce a closure over *name*.
+  172:         @functools.wraps(getattr(cls, name))
+  172:         def method(self, *args, **kwargs):
+    2:             return getattr(self, name)(*args, **kwargs)
+   86:         return method
+       
+   43:     for prop, aliases in alias_d.items():
+   37:         exists = False
+  111:         for prefix in ["get_", "set_"]:
+   74:             if prefix + prop in vars(cls):
+   72:                 exists = True
+  158:                 for alias in aliases:
+   86:                     method = make_alias(prefix + prop)
+   86:                     method.__name__ = prefix + alias
+   86:                     method.__doc__ = f"Alias for `{prefix + prop}`."
+   86:                     setattr(cls, prefix + alias, method)
+   37:         if not exists:
+                   raise ValueError(
+                       f"Neither getter nor setter exists for {prop!r}")
+       
+    6:     def get_aliased_and_aliases(d):
+  107:         return {*d, *(alias for aliases in d.values() for alias in aliases)}
+       
+    6:     preexisting_aliases = getattr(cls, "_alias_map", {})
+   12:     conflicting = (get_aliased_and_aliases(preexisting_aliases)
+    6:                    & get_aliased_and_aliases(alias_d))
+    6:     if conflicting:
+               # Need to decide on conflict resolution policy.
+               raise NotImplementedError(
+                   f"Parent class already defines conflicting aliases: {conflicting}")
+    6:     cls._alias_map = {**preexisting_aliases, **alias_d}
+    6:     return cls
+       
+       
+    1: def select_matching_signature(funcs, *args, **kwargs):
+           """
+           Select and call the function that accepts ``*args, **kwargs``.
+       
+           *funcs* is a list of functions which should not raise any exception (other
+           than `TypeError` if the arguments passed do not match their signature).
+       
+           `select_matching_signature` tries to call each of the functions in *funcs*
+           with ``*args, **kwargs`` (in the order in which they are given).  Calls
+           that fail with a `TypeError` are silently skipped.  As soon as a call
+           succeeds, `select_matching_signature` returns its return value.  If no
+           function accepts ``*args, **kwargs``, then the `TypeError` raised by the
+           last failing call is re-raised.
+       
+           Callers should normally make sure that any ``*args, **kwargs`` can only
+           bind a single *func* (to avoid any ambiguity), although this is not checked
+           by `select_matching_signature`.
+       
+           Notes
+           -----
+           `select_matching_signature` is intended to help implementing
+           signature-overloaded functions.  In general, such functions should be
+           avoided, except for back-compatibility concerns.  A typical use pattern is
+           ::
+       
+               def my_func(*args, **kwargs):
+                   params = select_matching_signature(
+                       [lambda old1, old2: locals(), lambda new: locals()],
+                       *args, **kwargs)
+                   if "old1" in params:
+                       warn_deprecated(...)
+                       old1, old2 = params.values()  # note that locals() is ordered.
+                   else:
+                       new, = params.values()
+                   # do things with params
+       
+           which allows *my_func* to be called either with two parameters (*old1* and
+           *old2*) or a single one (*new*).  Note that the new signature is given
+           last, so that callers get a `TypeError` corresponding to the new signature
+           if the arguments they passed in do not match any signature.
+           """
+           # Rather than relying on locals() ordering, one could have just used func's
+           # signature (``bound = inspect.signature(func).bind(*args, **kwargs);
+           # bound.apply_defaults(); return bound``) but that is significantly slower.
+   54:     for i, func in enumerate(funcs):
+   54:         try:
+   54:             return func(*args, **kwargs)
+   27:         except TypeError:
+   27:             if i == len(funcs) - 1:
+                       raise
+       
+       
+    1: def nargs_error(name, takes, given):
+           """Generate a TypeError to be raised by function calls with wrong arity."""
+           return TypeError(f"{name}() takes {takes} positional arguments but "
+                            f"{given} were given")
+       
+       
+    1: def kwarg_error(name, kw):
+           """
+           Generate a TypeError to be raised by function calls with wrong kwarg.
+       
+           Parameters
+           ----------
+           name : str
+               The name of the calling function.
+           kw : str or Iterable[str]
+               Either the invalid keyword argument name, or an iterable yielding
+               invalid keyword arguments (e.g., a ``kwargs`` dict).
+           """
+           if not isinstance(kw, str):
+               kw = next(iter(kw))
+           return TypeError(f"{name}() got an unexpected keyword argument '{kw}'")
+       
+       
+    1: def recursive_subclasses(cls):
+           """Yield *cls* and direct and indirect subclasses of *cls*."""
+  988:     yield cls
+ 1962:     for subcls in cls.__subclasses__():
+  974:         yield from recursive_subclasses(subcls)
+       
+       
+    1: def warn_external(message, category=None):
+           """
+           `warnings.warn` wrapper that sets *stacklevel* to "outside Matplotlib".
+       
+           The original emitter of the warning can be obtained by patching this
+           function back to `warnings.warn`, i.e. ``_api.warn_external =
+           warnings.warn`` (or ``functools.partial(warnings.warn, stacklevel=2)``,
+           etc.).
+           """
+    2:     kwargs = {}
+    2:     if sys.version_info[:2] >= (3, 12):
+               # Go to Python's `site-packages` or `lib` from an editable install.
+               basedir = pathlib.Path(__file__).parents[2]
+               kwargs['skip_file_prefixes'] = (str(basedir / 'matplotlib'),
+                                               str(basedir / 'mpl_toolkits'))
+           else:
+    2:         frame = sys._getframe()
+    9:         for stacklevel in itertools.count(1):
+    9:             if frame is None:
+                       # when called in embedded context may hit frame is None
+                       kwargs['stacklevel'] = stacklevel
+                       break
+   18:             if not re.match(r"\A(matplotlib|mpl_toolkits)(\Z|\.(?!tests\.))",
+                                   # Work around sphinx-gallery not setting __name__.
+    9:                             frame.f_globals.get("__name__", "")):
+    2:                 kwargs['stacklevel'] = stacklevel
+    2:                 break
+    7:             frame = frame.f_back
+               # preemptively break reference cycle between locals and the frame
+    2:         del frame
+    2:     warnings.warn(message, category, **kwargs)

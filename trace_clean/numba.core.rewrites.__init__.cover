@@ -1,0 +1,8 @@
+    1: """
+       A subpackage hosting Numba IR rewrite passes.
+       """
+       
+    1: from .registry import register_rewrite, rewrite_registry, Rewrite
+       # Register various built-in rewrite passes
+    1: from numba.core.rewrites import (static_getitem, static_raise, static_binop,
+                                        ir_print)

@@ -1,0 +1,46 @@
+    1: """
+       Internal helpers
+       """
+       
+    1: from functools import wraps
+    1: from inspect import signature
+       
+    1: def get_xp(xp):
+           """
+           Decorator to automatically replace xp with the corresponding array module.
+       
+           Use like
+       
+           import numpy as np
+       
+           @get_xp(np)
+           def func(x, /, xp, kwarg=None):
+               return xp.func(x, kwarg=kwarg)
+       
+           Note that xp must be a keyword argument and come after all non-keyword
+           arguments.
+       
+           """
+       
+   63:     def inner(f):
+  126:         @wraps(f)
+  126:         def wrapped_f(*args, **kwargs):
+                   return f(*args, xp=xp, **kwargs)
+       
+   63:         sig = signature(f)
+  126:         new_sig = sig.replace(
+  400:             parameters=[sig.parameters[i] for i in sig.parameters if i != "xp"]
+               )
+       
+   63:         if wrapped_f.__doc__ is None:
+  118:             wrapped_f.__doc__ = f"""\
+   59: Array API compatibility wrapper for {f.__name__}.
+       
+       See the corresponding documentation in NumPy/CuPy and/or the array API
+       specification for more details.
+       
+       """
+   63:         wrapped_f.__signature__ = new_sig
+   63:         return wrapped_f
+       
+   63:     return inner

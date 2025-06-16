@@ -1,0 +1,19 @@
+    1: import numpy as np
+       
+       
+    2: class BaseParameters:
+       
+    1:     def __init__(self):
+               self.as_array: np.ndarray = np.array([], dtype=float)
+       
+    1:     def export(self):
+               export = {}
+               export["model_parameters"] = self.as_array.tolist()
+               return export
+       
+    1:     def fromJSON(self, dict):
+               """ Maps dictionary elements coming (from patient JSON files) to instance attributes.
+               """
+       
+   58:         for key, value in dict.items():
+   56:             setattr(self, key, np.asarray([value]))

@@ -1,0 +1,289 @@
+    1: import json, argparse
+    1: import os
+    1: from ..Utilities.paths import default_settings_path
+    1: from pymgipsim.Interface.Messages.parser_colors import color_help_text, color_group_header_text
+       
+    2: with open(os.path.join(default_settings_path, "scenario_default.json")) as f:
+    1:     default_settings = json.load(f)
+       
+    1: def generate_carb_settings_parser(parent_parser = [], add_help = True):
+       
+    2:     carb_settings_parser = argparse.ArgumentParser(
+    1:                                                     prog = 'Carbohydrate Intake Settings',
+    1:                                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    1:                                                     parents=parent_parser,
+    1:                                                     add_help=add_help
+                                                           )
+       
+    1:     carb_group = carb_settings_parser.add_argument_group(color_group_header_text('Carbohydrate Intake'))
+    2:     carb_group.add_argument(
+    1:                             '-bcr',
+    1:                             '--breakfast-carb-range',\
+    1:                             help = color_help_text('Breakfast carbohydrate intake range in grams. This can be either a single, constant value or a min and max for random sampling.' + \
+                                                           "Breakfast is given between 06:00-08:00. The duration is between 30-60 minutes long."),\
+    1:                             dest = 'breakfast_carb_range',\
+    1:                             nargs = "+",
+    1:                             type = float,
+    1:                             default = default_settings['input_generation']['breakfast_carb_range']
+                                   )
+       
+    2:     carb_group.add_argument(
+    1:                             '-amscr',
+    1:                             '--am-snack-carb-range',\
+    1:                             help = color_help_text('AM snack carbohydrate intake range in grams. This can be either a single, constant value or a min and max for random sampling.' + \
+                                                           "This snack is given between 09:00-11:00. The duration is between 5-15 minutes long."),\
+    1:                             dest = 'am_snack_carb_range',\
+    1:                             nargs = "+",
+    1:                             type = float,
+    1:                             default = default_settings['input_generation']['am_snack_carb_range']
+                                   )
+       
+       
+    2:     carb_group.add_argument(
+    1:                             '-lcr',
+    1:                             '--lunch-carb-range',\
+    1:                             help = color_help_text('Lunch carbohydrate intake range in grams. This can be either a single, constant value or a min and max for random sampling.' + \
+                                                           "Lunch is given between 12:00-14:00. The duration is between 30-60 minutes long."),\
+    1:                             dest = 'lunch_carb_range',\
+    1:                             nargs = "+",
+    1:                             type = float,
+    1:                             default = default_settings['input_generation']['lunch_carb_range']
+                                   )
+       
+    2:     carb_group.add_argument(
+    1:                             '-pmscr',
+    1:                             '--pm-snack-carb-range',\
+    1:                             help = color_help_text('PM snack carbohydrate intake range in grams. This can be either a single, constant value or a min and max for random sampling.' + \
+                                                   "This snack is given between 15:00-17:00. The duration is between 5-15 minutes long."),\
+    1:                             dest = 'pm_snack_carb_range',\
+    1:                             nargs = "+",
+    1:                             type = float,
+    1:                             default = default_settings['input_generation']['pm_snack_carb_range']
+                                   )
+       
+    2:     carb_group.add_argument(
+    1:                             '-dcr',
+    1:                             '--dinner-carb-range',\
+    1:                             help = color_help_text('Dinner carbohydrate intake range in grams. This can be either a single, constant value or a min and max for random sampling.' + \
+                                                           "Dinner is given between 18:00-20:00. The duration is between 30-60 minutes long."),\
+    1:                             dest = 'dinner_carb_range',\
+    1:                             nargs = "+",
+    1:                             type = float,
+    1:                             default = default_settings['input_generation']['dinner_carb_range']
+                                   )
+       
+    1:     return carb_settings_parser
+       
+    1: def generate_multiscale_carb_settings_parser(parent_parser = [], add_help = True):
+       
+    2:     carb_energy_settings_parser = argparse.ArgumentParser(
+    1:                                                     prog = 'Carbohydrate Intake Settings',
+    1:                                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    1:                                                     parents=parent_parser,
+    1:                                                     add_help=add_help
+                                                           )
+       
+    1:     carb_energy_group = carb_energy_settings_parser.add_argument_group(color_group_header_text('Carbohydrate Intake'))
+    2:     carb_energy_group.add_argument(
+    1:                                     '-fcho',
+    1:                                     '--fraction-cho-intake',\
+    1:                                     help = color_help_text("Fraction of energy daily intake composed of carbohydrates. Can be a single value or a range, and should be <= 1."),\
+    1:                                     dest = 'fraction_cho_intake',\
+    1:                                     nargs = '+',
+    1:                                     type = float,
+    1:                                     default = default_settings['input_generation']['fraction_cho_intake']
+                                           )
+           
+    2:     carb_energy_group.add_argument(
+    1:                                     '-fcas',
+    1:                                     '--fraction-cho-as-snack',\
+    1:                                     help = color_help_text("Fraction of carbohydrates obtained from snacks. Can be a single value or a a range, and must be <= 1."),\
+    1:                                     dest = 'fraction_cho_as_snack',\
+    1:                                     nargs = 1,
+    1:                                     type = float,
+    1:                                     default = default_settings['input_generation']['fraction_cho_as_snack']
+                                           )
+           
+    2:     carb_energy_group.add_argument(
+    1:                                     '-ncb',
+    1:                                     '--net-calorie-balance',\
+    1:                                     help = color_help_text("The net energy balance per day in calories. This can be a single value or a range, and can be positive (more intake than expenditure) or negative (less intake than expenditure)."),\
+    1:                                     dest = 'net_calorie_balance',\
+    1:                                     nargs = 1,
+    1:                                     default = default_settings['input_generation']['net_calorie_balance'],
+    1:                                     type = float,
+                                           )
+       
+       
+    1:     return carb_energy_settings_parser
+       
+       
+       
+    1: def generate_sglt2i_settings_parser(parent_parser = [], add_help = True):
+       
+    2:     sglt2i_settings_parser = argparse.ArgumentParser(
+    1:                                                 prog = 'SGLT2I Settings Parser',
+    1:                                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    1:                                                 parents=parent_parser,
+    1:                                                 add_help=add_help
+                                                       )
+           
+    1:     sglt2i_group = sglt2i_settings_parser.add_argument_group(color_group_header_text('SGLT2I Intake'))
+    2:     sglt2i_group.add_argument('-sdm',
+    1:                                         '--sglt2i_dose_magnitude',
+    1:                                         help = color_help_text('SGLT2I dose in mg.'),\
+    1:                                         nargs = 1,\
+    1:                                         dest = 'sglt2i_dose_magnitude',\
+    1:                                         type = int,
+    1:                                         default = default_settings["input_generation"]['sglt2i_dose_magnitude']
+                                               )
+       
+    1:     return sglt2i_settings_parser
+       
+       
+    1: def generate_exog_insulin_parser(parent_parser = [], add_help = True):
+       
+    2:     insulin_settings_parser = argparse.ArgumentParser(
+    1:                                                     prog = 'Exogenous Insulin Settings Parser',
+    1:                                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    1:                                                     parents=parent_parser,
+    1:                                                     add_help=add_help
+                                                           )
+       
+    1:     exog_insulin_group = insulin_settings_parser.add_argument_group(color_group_header_text('Basal and Bolus Insulin Intake'))
+       
+    2:     exog_insulin_group.add_argument('-bo',
+    1:                                     '--bolus',
+    1:                                     help = color_help_text('Insulin carb fraction multiplier.'),
+    1:                                     dest = 'bolus_multiplier',
+    1:                                     type=float,
+    1:                                     default=1.0
+                                           )
+       
+    2:     exog_insulin_group.add_argument('-ba',
+    1:                                     '--basal',
+    1:                                     help = color_help_text('Basal insulin multiplier.'),
+    1:                                     dest = 'basal_multiplier',
+    1:                                     type=float,
+    1:                                     default=1.0
+                                           )
+       
+    1:     return insulin_settings_parser
+       
+       
+    1: def generate_activity_parser(parent_parser=[], add_help=True):
+           # net_energy_balance_parser = generate_energy_balance_parser(add_help = False)
+       
+    2:     activity_parser = argparse.ArgumentParser(
+    1:         prog='Activity Settings',
+    1:         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    1:         add_help=add_help
+           )
+    1:     physact = activity_parser.add_argument_group(color_group_header_text('Physical activity'))
+       
+    2:     physact.add_argument('-rst',
+    1:                                     '--running_start-time',
+    1:                                     help = color_help_text('Start time of the activity'),
+    1:                                     dest = 'running_start_time',
+    1:                                     nargs="+",
+    1:                                     type=str,
+    1:                                     default=["16:00", "18:00"]
+                                           )
+       
+    2:     physact.add_argument('-rd',
+    1:                                     '--running_duration',
+    1:                                     help = color_help_text('Duration of the activity'),
+    1:                                     dest = 'running_duration',
+    1:                                     type=float,
+    1:                                     nargs="+",
+    1:                                     default=[20.0, 90.0]
+                                           )
+       
+       
+       
+    2:     physact.add_argument('-rinc',
+    1:                                     '--running_incline',
+    1:                                     help = color_help_text('Incline.'),
+    1:                                     dest = 'running_incline',
+    1:                                     type=float,
+    1:                                     nargs = "+",
+    1:                                     default = [0.0, 6.0]
+                                           )
+       
+    2:     physact.add_argument('-rsp',
+    1:                                     '--running_speed',
+    1:                                     help = color_help_text('Incline.'),
+    1:                                     dest = 'running_speed',
+    1:                                     type=float,
+    1:                                     nargs = "+",
+    1:                                     default = [1.7, 7.0]
+                                           )
+       
+       
+    2:     physact.add_argument('-cst',
+    1:                                     '--cycling_start_time',
+    1:                                     help = color_help_text('Start time of the activity'),
+    1:                                     dest = 'cycling_start_time',
+    1:                                     nargs="+",
+    1:                                     type=str,
+    1:                                     default=["16:00", "18:00"]
+                                           )
+       
+    2:     physact.add_argument('-cd',
+    1:                                     '--cycling_duration',
+    1:                                     help = color_help_text('Duration of the activity'),
+    1:                                     dest = 'cycling_duration',
+    1:                                     type=float,
+    1:                                     nargs="+",
+    1:                                     default=[20.0, 90.0]
+                                           )
+       
+    2:     physact.add_argument('-cpwr',
+    1:                                     '--cycling_power',
+    1:                                     help = color_help_text('Average exerted power.'),
+    1:                                     dest = 'cycling_power',
+    1:                                     type=float,
+    1:                                     nargs = "+",
+    1:                                     default = [0.0]
+                                           )
+       
+    1:     return activity_parser
+       
+       
+       
+    1: def generate_input_parser(parent_parser = [], add_help = True):
+       
+    1:     carb_settings_parser = generate_carb_settings_parser(add_help = False)
+    1:     carb_multiscale_settings_parser = generate_multiscale_carb_settings_parser(add_help = False)
+       
+    1:     sglt2i_settings_parser = generate_sglt2i_settings_parser(add_help = False)
+       
+    1:     insulin_settings_parser = generate_exog_insulin_parser(add_help = False)
+       
+    1:     activity_parser = generate_activity_parser(add_help = False)
+       
+    1:     if parent_parser:
+               parent_parser_combined = [
+                                       carb_settings_parser,
+                                       carb_multiscale_settings_parser,
+                                       sglt2i_settings_parser,
+                                       insulin_settings_parser,
+                                       activity_parser,
+                                       ] + parent_parser
+           else:
+    1:         parent_parser_combined = [
+    1:                                 carb_settings_parser,
+    1:                                 carb_multiscale_settings_parser,
+    1:                                 sglt2i_settings_parser,
+    1:                                 insulin_settings_parser,
+    1:                                 activity_parser
+                                       ]
+           
+    2:     input_parser = argparse.ArgumentParser(
+    1:                                             prog = 'Input Settings',
+    1:                                             formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    1:                                             parents=parent_parser_combined,
+    1:                                             add_help=add_help
+                                                   )
+       
+    1:     return input_parser

@@ -1,0 +1,259 @@
+    1: """
+       Serialization support for compiled functions.
+       """
+    1: import sys
+    1: import abc
+    1: import io
+    1: import copyreg
+       
+       
+    1: import pickle
+    1: from numba import cloudpickle
+    1: from llvmlite import ir
+       
+       
+       #
+       # Pickle support
+       #
+       
+    1: def _rebuild_reduction(cls, *args):
+           """
+           Global hook to rebuild a given class from its __reduce__ arguments.
+           """
+           return cls._rebuild(*args)
+       
+       
+       # Keep unpickled object via `numba_unpickle` alive.
+    1: _unpickled_memo = {}
+       
+       
+    1: def _numba_unpickle(address, bytedata, hashed):
+           """Used by `numba_unpickle` from _helperlib.c
+       
+           Parameters
+           ----------
+           address : int
+           bytedata : bytes
+           hashed : bytes
+       
+           Returns
+           -------
+           obj : object
+               unpickled object
+           """
+17299:     key = (address, hashed)
+17299:     try:
+17299:         obj = _unpickled_memo[key]
+    5:     except KeyError:
+    5:         _unpickled_memo[key] = obj = cloudpickle.loads(bytedata)
+17299:     return obj
+       
+       
+    1: def dumps(obj):
+           """Similar to `pickle.dumps()`. Returns the serialized object in bytes.
+           """
+   26:     pickler = NumbaPickler
+   52:     with io.BytesIO() as buf:
+   26:         p = pickler(buf, protocol=4)
+   26:         p.dump(obj)
+   26:         pickled = buf.getvalue()
+       
+   26:     return pickled
+       
+       
+    1: def runtime_build_excinfo_struct(static_exc, exc_args):
+           exc, static_args, locinfo = cloudpickle.loads(static_exc)
+           real_args = []
+           exc_args_iter = iter(exc_args)
+           for arg in static_args:
+               if isinstance(arg, ir.Value):
+                   real_args.append(next(exc_args_iter))
+               else:
+                   real_args.append(arg)
+           return (exc, tuple(real_args), locinfo)
+       
+       
+       # Alias to pickle.loads to allow `serialize.loads()`
+    1: loads = cloudpickle.loads
+       
+       
+    2: class _CustomPickled:
+    1:     """A wrapper for objects that must be pickled with `NumbaPickler`.
+       
+           Standard `pickle` will pick up the implementation registered via `copyreg`.
+           This will spawn a `NumbaPickler` instance to serialize the data.
+       
+           `NumbaPickler` overrides the handling of this type so as not to spawn a
+           new pickler for the object when it is already being pickled by a
+           `NumbaPickler`.
+           """
+       
+    1:     __slots__ = 'ctor', 'states'
+       
+    1:     def __init__(self, ctor, states):
+               self.ctor = ctor
+               self.states = states
+       
+    1:     def _reduce(self):
+               return _CustomPickled._rebuild, (self.ctor, self.states)
+       
+    2:     @classmethod
+    2:     def _rebuild(cls, ctor, states):
+               return cls(ctor, states)
+       
+       
+    1: def _unpickle__CustomPickled(serialized):
+           """standard unpickling for `_CustomPickled`.
+       
+           Uses `NumbaPickler` to load.
+           """
+           ctor, states = loads(serialized)
+           return _CustomPickled(ctor, states)
+       
+       
+    1: def _pickle__CustomPickled(cp):
+           """standard pickling for `_CustomPickled`.
+       
+           Uses `NumbaPickler` to dump.
+           """
+           serialized = dumps((cp.ctor, cp.states))
+           return _unpickle__CustomPickled, (serialized,)
+       
+       
+       # Register custom pickling for the standard pickler.
+    1: copyreg.pickle(_CustomPickled, _pickle__CustomPickled)
+       
+       
+    1: def custom_reduce(cls, states):
+           """For customizing object serialization in `__reduce__`.
+       
+           Object states provided here are used as keyword arguments to the
+           `._rebuild()` class method.
+       
+           Parameters
+           ----------
+           states : dict
+               Dictionary of object states to be serialized.
+       
+           Returns
+           -------
+           result : tuple
+               This tuple conforms to the return type requirement for `__reduce__`.
+           """
+           return custom_rebuild, (_CustomPickled(cls, states),)
+       
+       
+    1: def custom_rebuild(custom_pickled):
+           """Customized object deserialization.
+       
+           This function is referenced internally by `custom_reduce()`.
+           """
+           cls, states = custom_pickled.ctor, custom_pickled.states
+           return cls._rebuild(**states)
+       
+       
+    1: def is_serialiable(obj):
+           """Check if *obj* can be serialized.
+       
+           Parameters
+           ----------
+           obj : object
+       
+           Returns
+           --------
+           can_serialize : bool
+           """
+           with io.BytesIO() as fout:
+               pickler = NumbaPickler(fout)
+               try:
+                   pickler.dump(obj)
+               except pickle.PicklingError:
+                   return False
+               else:
+                   return True
+       
+       
+    1: def _no_pickle(obj):
+           raise pickle.PicklingError(f"Pickling of {type(obj)} is unsupported")
+       
+       
+    1: def disable_pickling(typ):
+           """This is called on a type to disable pickling
+           """
+    1:     NumbaPickler.disabled_types.add(typ)
+           # Return `typ` to allow use as a decorator
+    1:     return typ
+       
+       
+    2: class NumbaPickler(cloudpickle.CloudPickler):
+    1:     disabled_types = set()
+    1:     """A set of types that pickling cannot is disabled.
+           """
+       
+    1:     def reducer_override(self, obj):
+               # Overridden to disable pickling of certain types
+   26:         if type(obj) in self.disabled_types:
+                   _no_pickle(obj)  # noreturn
+   26:         return super().reducer_override(obj)
+       
+       
+    1: def _custom_reduce__custompickled(cp):
+           return cp._reduce()
+       
+       
+    1: NumbaPickler.dispatch_table[_CustomPickled] = _custom_reduce__custompickled
+       
+       
+    2: class ReduceMixin(abc.ABC):
+    1:     """A mixin class for objects that should be reduced by the NumbaPickler
+           instead of the standard pickler.
+           """
+           # Subclass MUST override the below methods
+       
+    2:     @abc.abstractmethod
+    2:     def _reduce_states(self):
+               raise NotImplementedError
+       
+    2:     @abc.abstractclassmethod
+    2:     def _rebuild(cls, **kwargs):
+               raise NotImplementedError
+       
+           # Subclass can override the below methods
+       
+    1:     def _reduce_class(self):
+               return self.__class__
+       
+           # Private methods
+       
+    1:     def __reduce__(self):
+               return custom_reduce(self._reduce_class(), self._reduce_states())
+       
+       
+    2: class PickleCallableByPath:
+    1:     """Wrap a callable object to be pickled by path to workaround limitation
+           in pickling due to non-pickleable objects in function non-locals.
+       
+           Note:
+           - Do not use this as a decorator.
+           - Wrapped object must be a global that exist in its parent module and it
+             can be imported by `from the_module import the_object`.
+       
+           Usage:
+       
+           >>> def my_fn(x):
+           >>>     ...
+           >>> wrapped_fn = PickleCallableByPath(my_fn)
+           >>> # refer to `wrapped_fn` instead of `my_fn`
+           """
+    1:     def __init__(self, fn):
+               self._fn = fn
+       
+    1:     def __call__(self, *args, **kwargs):
+               return self._fn(*args, **kwargs)
+       
+    1:     def __reduce__(self):
+               return type(self)._rebuild, (self._fn.__module__, self._fn.__name__,)
+       
+    2:     @classmethod
+    2:     def _rebuild(cls, modname, fn_path):
+               return cls(getattr(sys.modules[modname], fn_path))

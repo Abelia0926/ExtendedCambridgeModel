@@ -1,0 +1,141 @@
+    1: import inspect
+       
+    1: from . import _api
+       
+       
+    1: def kwarg_doc(text):
+           """
+           Decorator for defining the kwdoc documentation of artist properties.
+       
+           This decorator can be applied to artist property setter methods.
+           The given text is stored in a private attribute ``_kwarg_doc`` on
+           the method.  It is used to overwrite auto-generated documentation
+           in the *kwdoc list* for artists. The kwdoc list is used to document
+           ``**kwargs`` when they are properties of an artist. See e.g. the
+           ``**kwargs`` section in `.Axes.text`.
+       
+           The text should contain the supported types, as well as the default
+           value if applicable, e.g.:
+       
+               @_docstring.kwarg_doc("bool, default: :rc:`text.usetex`")
+               def set_usetex(self, usetex):
+       
+           See Also
+           --------
+           matplotlib.artist.kwdoc
+       
+           """
+    1:     def decorator(func):
+    1:         func._kwarg_doc = text
+    1:         return func
+    1:     return decorator
+       
+       
+    2: class Substitution:
+    1:     """
+           A decorator that performs %-substitution on an object's docstring.
+       
+           This decorator should be robust even if ``obj.__doc__`` is None (for
+           example, if -OO was passed to the interpreter).
+       
+           Usage: construct a docstring.Substitution with a sequence or dictionary
+           suitable for performing substitution; then decorate a suitable function
+           with the constructed object, e.g.::
+       
+               sub_author_name = Substitution(author='Jason')
+       
+               @sub_author_name
+               def some_function(x):
+                   "%(author)s wrote this function"
+       
+               # note that some_function.__doc__ is now "Jason wrote this function"
+       
+           One can also use positional arguments::
+       
+               sub_first_last_names = Substitution('Edgar Allen', 'Poe')
+       
+               @sub_first_last_names
+               def some_function(x):
+                   "%s %s wrote the Raven"
+           """
+    1:     def __init__(self, *args, **kwargs):
+   10:         if args and kwargs:
+                   raise TypeError("Only positional or keyword args are allowed")
+   10:         self.params = args or kwargs
+       
+    1:     def __call__(self, func):
+   10:         if func.__doc__:
+   10:             func.__doc__ = inspect.cleandoc(func.__doc__) % self.params
+   10:         return func
+       
+       
+    2: class _ArtistKwdocLoader(dict):
+    1:     def __missing__(self, key):
+   14:         if not key.endswith(":kwdoc"):
+                   raise KeyError(key)
+   14:         name = key[:-len(":kwdoc")]
+   14:         from matplotlib.artist import Artist, kwdoc
+   14:         try:
+ 1030:             cls, = (cls for cls in _api.recursive_subclasses(Artist)
+ 1002:                     if cls.__name__ == name)
+               except ValueError as e:
+                   raise KeyError(key) from e
+   14:         return self.setdefault(key, kwdoc(cls))
+       
+       
+    2: class _ArtistPropertiesSubstitution:
+    1:     """
+           A class to substitute formatted placeholders in docstrings.
+       
+           This is realized in a single instance ``_docstring.interpd``.
+       
+           Use `~._ArtistPropertiesSubstition.register` to define placeholders and
+           their substitution, e.g. ``_docstring.interpd.register(name="some value")``.
+       
+           Use this as a decorator to apply the substitution::
+       
+               @_docstring.interpd
+               def some_func():
+                   '''Replace %(name)s.'''
+       
+           Decorating a class triggers substitution both on the class docstring and
+           on the class' ``__init__`` docstring (which is a commonly required
+           pattern for Artist subclasses).
+       
+           Substitutions of the form ``%(classname:kwdoc)s`` (ending with the
+           literal ":kwdoc" suffix) trigger lookup of an Artist subclass with the
+           given *classname*, and are substituted with the `.kwdoc` of that class.
+           """
+       
+    1:     def __init__(self):
+    1:         self.params = _ArtistKwdocLoader()
+       
+    1:     def register(self, **kwargs):
+               """
+               Register substitutions.
+       
+               ``_docstring.interpd.register(name="some value")`` makes "name" available
+               as a named parameter that will be replaced by "some value".
+               """
+   22:         self.params.update(**kwargs)
+       
+    1:     def __call__(self, obj):
+  128:         if obj.__doc__:
+  127:             obj.__doc__ = inspect.cleandoc(obj.__doc__) % self.params
+  128:         if isinstance(obj, type) and obj.__init__ != object.__init__:
+   11:             self(obj.__init__)
+  128:         return obj
+       
+       
+    1: def copy(source):
+           """Copy a docstring from another source function (if present)."""
+  105:     def do_copy(target):
+  105:         if source.__doc__:
+  105:             target.__doc__ = source.__doc__
+  105:         return target
+  105:     return do_copy
+       
+       
+       # Create a decorator that will house the various docstring snippets reused
+       # throughout Matplotlib.
+    1: interpd = _ArtistPropertiesSubstitution()

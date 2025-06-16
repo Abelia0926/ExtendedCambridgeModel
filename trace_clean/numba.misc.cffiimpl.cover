@@ -1,0 +1,22 @@
+    1: """
+       Implementation of some CFFI functions
+       """
+       
+       
+    1: from numba.core.imputils import Registry
+    1: from numba.core import types
+    1: from numba.np import arrayobj
+       
+    1: registry = Registry('cffiimpl')
+       
+    2: @registry.lower('ffi.from_buffer', types.Buffer)
+    2: def from_buffer(context, builder, sig, args):
+           assert len(sig.args) == 1
+           assert len(args) == 1
+           [fromty] = sig.args
+           [val] = args
+           # Type inference should have prevented passing a buffer from an
+           # array to a pointer of the wrong type
+           assert fromty.dtype == sig.return_type.dtype
+           ary = arrayobj.make_array(fromty)(context, builder, val)
+           return ary.data

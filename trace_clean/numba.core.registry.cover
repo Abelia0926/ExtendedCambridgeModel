@@ -1,0 +1,84 @@
+    1: import contextlib
+       #from functools import cached_property
+    1: from numba.core.utils import threadsafe_cached_property as cached_property
+       
+    1: from numba.core.descriptors import TargetDescriptor
+    1: from numba.core import utils, typing, dispatcher, cpu
+       
+       # -----------------------------------------------------------------------------
+       # Default CPU target descriptors
+       
+       
+    2: class CPUTarget(TargetDescriptor):
+    1:     options = cpu.CPUTargetOptions
+       
+    2:     @cached_property
+    2:     def _toplevel_target_context(self):
+               # Lazily-initialized top-level target context, for all threads
+    1:         return cpu.CPUContext(self.typing_context, self._target_name)
+       
+    2:     @cached_property
+    2:     def _toplevel_typing_context(self):
+               # Lazily-initialized top-level typing context, for all threads
+    1:         return typing.Context()
+       
+    2:     @property
+    2:     def target_context(self):
+               """
+               The target context for CPU targets.
+               """
+  335:         return self._toplevel_target_context
+       
+    2:     @property
+    2:     def typing_context(self):
+               """
+               The typing context for CPU targets.
+               """
+   76:         return self._toplevel_typing_context
+       
+       
+       # The global CPU target
+    1: cpu_target = CPUTarget('cpu')
+       
+       
+    2: class CPUDispatcher(dispatcher.Dispatcher):
+    1:     targetdescr = cpu_target
+       
+       
+    2: class DelayedRegistry(utils.UniqueDict):
+    1:     """
+           A unique dictionary but with deferred initialisation of the values.
+       
+           Attributes
+           ----------
+           ondemand:
+       
+               A dictionary of key -> value, where value is executed
+               the first time it is is used.  It is used for part of a deferred
+               initialization strategy.
+           """
+    1:     def __init__(self, *args, **kws):
+    5:         self.ondemand = utils.UniqueDict()
+    5:         self.key_type = kws.pop('key_type', None)
+    5:         self.value_type = kws.pop('value_type', None)
+    5:         self._type_check = self.key_type or self.value_type
+    5:         super(DelayedRegistry, self).__init__(*args, **kws)
+       
+    1:     def __getitem__(self, item):
+ 4808:         if item in self.ondemand:
+                   self[item] = self.ondemand[item]()
+                   del self.ondemand[item]
+ 4808:         return super(DelayedRegistry, self).__getitem__(item)
+       
+    1:     def __setitem__(self, key, value):
+   11:         if self._type_check:
+    2:             def check(x, ty_x):
+    2:                 if isinstance(ty_x, type):
+    2:                     assert ty_x in x.__mro__, (x, ty_x)
+                       else:
+                           assert isinstance(x, ty_x), (x, ty_x)
+    2:             if self.key_type is not None:
+    2:                 check(key, self.key_type)
+    2:             if self.value_type is not None:
+                       check(value, self.value_type)
+   11:         return super(DelayedRegistry, self).__setitem__(key, value)

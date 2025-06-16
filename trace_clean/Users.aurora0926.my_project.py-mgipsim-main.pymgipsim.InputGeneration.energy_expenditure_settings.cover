@@ -1,0 +1,36 @@
+    1: import numpy as np
+    1: from pymgipsim.InputGeneration.signal import Signal, Events
+    1: from pymgipsim.Utilities.Scenario import scenario, controller
+    1: from pymgipsim.Controllers import OpenLoop
+    1: import pymgipsim.VirtualPatient.Models.Physact.Heartrate2Energyexp as EE
+    1: from pymgipsim.ModelSolver.singlescale import SingleScaleSolver
+       
+    1: def generate_energy_expenditure(scenario_instance: scenario, args):
+    1:     no_subjects = scenario_instance.patient.number_of_subjects
+           # magnitude = np.expand_dims(np.asarray(scenario_instance.patient.demographic_info.resting_heart_rate),1)
+           # start_time = np.zeros((no_subjects,1))
+    1:     sampling_time = 1.0
+    1:     time = np.arange(scenario_instance.settings.start_time,scenario_instance.settings.end_time,sampling_time)
+    1:     model = EE.Model(sampling_time=sampling_time)
+       
+    2:     model.inputs.deltaEE = Signal(time=time, sampling_time=sampling_time,
+    1:                                         start_time=np.zeros((no_subjects, 1)), magnitude=np.zeros((no_subjects, 1)))
+    2:     model.inputs.METACSM = Signal(time=time, sampling_time=sampling_time,
+    1:                                         start_time=scenario_instance.inputs.METACSM.start_time,
+    1:                                         magnitude=scenario_instance.inputs.METACSM.magnitude)
+    2:     model.inputs.heart_rate = Signal(time=time, sampling_time=sampling_time,
+    1:                                         start_time=scenario_instance.inputs.heart_rate.start_time,
+    1:                                         magnitude=scenario_instance.inputs.heart_rate.magnitude)
+    1:     model.time.as_unix = time
+       
+    1:     scenario_controller = scenario_instance.controller
+    1:     scenario_instance.controller = controller(OpenLoop.controller.Controller.name,[])
+    1:     solver = SingleScaleSolver(scenario_instance, model)
+    1:     solver.set_solver("RK4")
+    1:     solver.model.preprocessing()
+    1:     solver.do_simulation(False)
+       
+    1:     energy_expenditure = solver.model.states.as_array[:,0,:]
+       
+    1:     scenario_instance.controller = scenario_controller
+    1:     return Events(magnitude=energy_expenditure, start_time=time*np.ones((no_subjects,1))).as_dict()

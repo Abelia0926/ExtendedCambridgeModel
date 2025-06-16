@@ -1,0 +1,5 @@
+    1: """This module contains least-squares algorithms."""
+    1: from .least_squares import least_squares
+    1: from .lsq_linear import lsq_linear
+       
+    1: __all__ = ['least_squares', 'lsq_linear']

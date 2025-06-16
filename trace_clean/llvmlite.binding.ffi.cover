@@ -1,0 +1,390 @@
+    1: import sys
+    1: import ctypes
+    1: import threading
+    1: import importlib.resources as _impres
+       
+    1: from llvmlite.binding.common import _decode_string, _is_shutting_down
+    1: from llvmlite.utils import get_library_name
+       
+       
+    1: def _make_opaque_ref(name):
+   28:     newcls = type(name, (ctypes.Structure,), {})
+   28:     return ctypes.POINTER(newcls)
+       
+       
+    1: LLVMContextRef = _make_opaque_ref("LLVMContext")
+    1: LLVMModuleRef = _make_opaque_ref("LLVMModule")
+    1: LLVMValueRef = _make_opaque_ref("LLVMValue")
+    1: LLVMTypeRef = _make_opaque_ref("LLVMType")
+    1: LLVMExecutionEngineRef = _make_opaque_ref("LLVMExecutionEngine")
+    1: LLVMPassManagerBuilderRef = _make_opaque_ref("LLVMPassManagerBuilder")
+    1: LLVMPassManagerRef = _make_opaque_ref("LLVMPassManager")
+    1: LLVMTargetDataRef = _make_opaque_ref("LLVMTargetData")
+    1: LLVMTargetLibraryInfoRef = _make_opaque_ref("LLVMTargetLibraryInfo")
+    1: LLVMTargetRef = _make_opaque_ref("LLVMTarget")
+    1: LLVMTargetMachineRef = _make_opaque_ref("LLVMTargetMachine")
+    1: LLVMMemoryBufferRef = _make_opaque_ref("LLVMMemoryBuffer")
+    1: LLVMAttributeListIterator = _make_opaque_ref("LLVMAttributeListIterator")
+    1: LLVMElementIterator = _make_opaque_ref("LLVMElementIterator")
+    1: LLVMAttributeSetIterator = _make_opaque_ref("LLVMAttributeSetIterator")
+    1: LLVMGlobalsIterator = _make_opaque_ref("LLVMGlobalsIterator")
+    1: LLVMFunctionsIterator = _make_opaque_ref("LLVMFunctionsIterator")
+    1: LLVMBlocksIterator = _make_opaque_ref("LLVMBlocksIterator")
+    1: LLVMArgumentsIterator = _make_opaque_ref("LLVMArgumentsIterator")
+    1: LLVMInstructionsIterator = _make_opaque_ref("LLVMInstructionsIterator")
+    1: LLVMOperandsIterator = _make_opaque_ref("LLVMOperandsIterator")
+    1: LLVMIncomingBlocksIterator = _make_opaque_ref("LLVMIncomingBlocksIterator")
+    1: LLVMTypesIterator = _make_opaque_ref("LLVMTypesIterator")
+    1: LLVMObjectCacheRef = _make_opaque_ref("LLVMObjectCache")
+    1: LLVMObjectFileRef = _make_opaque_ref("LLVMObjectFile")
+    1: LLVMSectionIteratorRef = _make_opaque_ref("LLVMSectionIterator")
+    1: LLVMOrcLLJITRef = _make_opaque_ref("LLVMOrcLLJITRef")
+    1: LLVMOrcDylibTrackerRef = _make_opaque_ref("LLVMOrcDylibTrackerRef")
+       
+       
+    2: class _LLVMLock:
+    1:     """A Lock to guarantee thread-safety for the LLVM C-API.
+       
+           This class implements __enter__ and __exit__ for acquiring and releasing
+           the lock as a context manager.
+       
+           Also, callbacks can be attached so that every time the lock is acquired
+           and released the corresponding callbacks will be invoked.
+           """
+    1:     def __init__(self):
+               # The reentrant lock is needed for callbacks that re-enter
+               # the Python interpreter.
+    1:         self._lock = threading.RLock()
+    1:         self._cblist = []
+       
+    1:     def register(self, acq_fn, rel_fn):
+               """Register callbacks that are invoked immediately after the lock is
+               acquired (``acq_fn()``) and immediately before the lock is released
+               (``rel_fn()``).
+               """
+    1:         self._cblist.append((acq_fn, rel_fn))
+       
+    1:     def unregister(self, acq_fn, rel_fn):
+               """Remove the registered callbacks.
+               """
+               self._cblist.remove((acq_fn, rel_fn))
+       
+    1:     def __enter__(self):
+ 9166:         self._lock.acquire()
+               # Invoke all callbacks
+18329:         for acq_fn, rel_fn in self._cblist:
+ 9163:             acq_fn()
+       
+    1:     def __exit__(self, *exc_details):
+               # Invoke all callbacks
+18329:         for acq_fn, rel_fn in self._cblist:
+ 9163:             rel_fn()
+ 9166:         self._lock.release()
+       
+       
+    2: class _suppress_cleanup_errors:
+    1:     def __init__(self, context):
+    1:         self._context = context
+       
+    1:     def __enter__(self):
+    1:         return self._context.__enter__()
+       
+    1:     def __exit__(self, exc_type, exc_value, traceback):
+    1:         try:
+    1:             return self._context.__exit__(exc_type, exc_value, traceback)
+               except PermissionError:
+                   pass  # Resource dylibs can't be deleted on Windows.
+       
+       
+    2: class _lib_wrapper(object):
+    1:     """Wrap libllvmlite with a lock such that only one thread may access it at
+           a time.
+       
+           This class duck-types a CDLL.
+           """
+    1:     __slots__ = ['_lib_handle', '_fntab', '_lock']
+       
+    1:     def __init__(self):
+    1:         self._lib_handle = None
+    1:         self._fntab = {}
+    1:         self._lock = _LLVMLock()
+       
+    1:     def _load_lib(self):
+    1:         try:
+    3:             with _suppress_cleanup_errors(_importlib_resources_path(
+    1:                     __name__.rpartition(".")[0],
+    2:                     get_library_name())) as lib_path:
+    1:                 self._lib_handle = ctypes.CDLL(str(lib_path))
+                       # Check that we can look up expected symbols.
+    1:                 _ = self._lib_handle.LLVMPY_GetVersionInfo()
+               except (OSError, AttributeError) as e:
+                   # OSError may be raised if the file cannot be opened, or is not
+                   # a shared library.
+                   # AttributeError is raised if LLVMPY_GetVersionInfo does not
+                   # exist.
+                   raise OSError("Could not find/load shared object file") from e
+       
+    2:     @property
+    2:     def _lib(self):
+               # Not threadsafe.
+  250:         if not self._lib_handle:
+    1:             self._load_lib()
+  250:         return self._lib_handle
+       
+    1:     def __getattr__(self, name):
+ 9517:         try:
+ 9517:             return self._fntab[name]
+  250:         except KeyError:
+                   # Lazily wraps new functions as they are requested
+  250:             cfn = getattr(self._lib, name)
+  250:             wrapped = _lib_fn_wrapper(self._lock, cfn)
+  250:             self._fntab[name] = wrapped
+  250:             return wrapped
+       
+    2:     @property
+    2:     def _name(self):
+               """The name of the library passed in the CDLL constructor.
+       
+               For duck-typing a ctypes.CDLL
+               """
+               return self._lib._name
+       
+    2:     @property
+    2:     def _handle(self):
+               """The system handle used to access the library.
+       
+               For duck-typing a ctypes.CDLL
+               """
+               return self._lib._handle
+       
+       
+    2: class _lib_fn_wrapper(object):
+    1:     """Wraps and duck-types a ctypes.CFUNCTYPE to provide
+           automatic locking when the wrapped function is called.
+       
+           TODO: we can add methods to mark the function as threadsafe
+                 and remove the locking-step on call when marked.
+           """
+    1:     __slots__ = ['_lock', '_cfn']
+       
+    1:     def __init__(self, lock, cfn):
+  250:         self._lock = lock
+  250:         self._cfn = cfn
+       
+    2:     @property
+    2:     def argtypes(self):
+               return self._cfn.argtypes
+       
+    2:     @argtypes.setter
+    2:     def argtypes(self, argtypes):
+  239:         self._cfn.argtypes = argtypes
+       
+    2:     @property
+    2:     def restype(self):
+               return self._cfn.restype
+       
+    2:     @restype.setter
+    2:     def restype(self, restype):
+  116:         self._cfn.restype = restype
+       
+    1:     def __call__(self, *args, **kwargs):
+18332:         with self._lock:
+ 9166:             return self._cfn(*args, **kwargs)
+       
+       
+    1: def _importlib_resources_path_repl(package, resource):
+           """Replacement implementation of `import.resources.path` to avoid
+           deprecation warning following code at importlib_resources/_legacy.py
+           as suggested by https://importlib-resources.readthedocs.io/en/latest/using.html#migrating-from-legacy
+       
+           Notes on differences from importlib.resources implementation:
+       
+           The `_common.normalize_path(resource)` call is skipped because it is an
+           internal API and it is unnecessary for the use here. What it does is
+           ensuring `resource` is a str and that it does not contain path separators.
+           """ # noqa E501
+    1:     return _impres.as_file(_impres.files(package) / resource)
+       
+       
+    1: _importlib_resources_path = (_importlib_resources_path_repl
+    1:                              if sys.version_info[:2] >= (3, 9)
+                                    else _impres.path)
+       
+       
+    1: lib = _lib_wrapper()
+       
+       
+    1: def register_lock_callback(acq_fn, rel_fn):
+           """Register callback functions for lock acquire and release.
+           *acq_fn* and *rel_fn* are callables that take no arguments.
+           """
+    1:     lib._lock.register(acq_fn, rel_fn)
+       
+       
+    1: def unregister_lock_callback(acq_fn, rel_fn):
+           """Remove the registered callback functions for lock acquire and release.
+           The arguments are the same as used in `register_lock_callback()`.
+           """
+           lib._lock.unregister(acq_fn, rel_fn)
+       
+       
+    2: class _DeadPointer(object):
+    1:     """
+           Dummy class to make error messages more helpful.
+           """
+       
+       
+    2: class OutputString(object):
+    1:     """
+           Object for managing the char* output of LLVM APIs.
+           """
+    1:     _as_parameter_ = _DeadPointer()
+       
+    2:     @classmethod
+    2:     def from_return(cls, ptr):
+               """Constructing from a pointer returned from the C-API.
+               The pointer must be allocated with LLVMPY_CreateString.
+       
+               Note
+               ----
+               Because ctypes auto-converts *restype* of *c_char_p* into a python
+               string, we must use *c_void_p* to obtain the raw pointer.
+               """
+               return cls(init=ctypes.cast(ptr, ctypes.c_char_p))
+       
+    1:     def __init__(self, owned=True, init=None):
+  460:         self._ptr = init if init is not None else ctypes.c_char_p(None)
+  460:         self._as_parameter_ = ctypes.byref(self._ptr)
+  460:         self._owned = owned
+       
+    1:     def close(self):
+  920:         if self._ptr is not None:
+  460:             if self._owned:
+  419:                 lib.LLVMPY_DisposeString(self._ptr)
+  460:             self._ptr = None
+  460:             del self._as_parameter_
+       
+    1:     def __enter__(self):
+  460:         return self
+       
+    1:     def __exit__(self, exc_type, exc_val, exc_tb):
+  460:         self.close()
+       
+    1:     def __del__(self, _is_shutting_down=_is_shutting_down):
+               # Avoid errors trying to rely on globals and modules at interpreter
+               # shutdown.
+  460:         if not _is_shutting_down():
+  460:             if self.close is not None:
+  460:                 self.close()
+       
+    1:     def __str__(self):
+  144:         if self._ptr is None:
+                   return "<dead OutputString>"
+  144:         s = self._ptr.value
+  144:         assert s is not None
+  144:         return _decode_string(s)
+       
+    1:     def __bool__(self):
+  157:         return bool(self._ptr)
+       
+    1:     __nonzero__ = __bool__
+       
+    2:     @property
+    2:     def bytes(self):
+               """Get the raw bytes of content of the char pointer.
+               """
+               return self._ptr.value
+       
+       
+    1: def ret_string(ptr):
+           """To wrap string return-value from C-API.
+           """
+           if ptr is not None:
+               return str(OutputString.from_return(ptr))
+       
+       
+    1: def ret_bytes(ptr):
+           """To wrap bytes return-value from C-API.
+           """
+           if ptr is not None:
+               return OutputString.from_return(ptr).bytes
+       
+       
+    2: class ObjectRef(object):
+    1:     """
+           A wrapper around a ctypes pointer to a LLVM object ("resource").
+           """
+    1:     _closed = False
+    1:     _as_parameter_ = _DeadPointer()
+           # Whether this object pointer is owned by another one.
+    1:     _owned = False
+       
+    1:     def __init__(self, ptr):
+ 2967:         if ptr is None:
+                   raise ValueError("NULL pointer")
+ 2967:         self._ptr = ptr
+ 2967:         self._as_parameter_ = ptr
+ 2967:         self._capi = lib
+       
+    1:     def close(self):
+               """
+               Close this object and do any required clean-up actions.
+               """
+ 3014:         try:
+ 3014:             if not self._closed and not self._owned:
+ 2782:                 self._dispose()
+               finally:
+ 3014:             self.detach()
+       
+    1:     def detach(self):
+               """
+               Detach the underlying LLVM resource without disposing of it.
+               """
+ 3106:         if not self._closed:
+ 2874:             del self._as_parameter_
+ 2874:             self._closed = True
+ 2874:             self._ptr = None
+       
+ 2257:     def _dispose(self):
+               """
+               Dispose of the underlying LLVM resource.  Should be overriden
+               by subclasses.  Automatically called by close(), __del__() and
+               __exit__() (unless the resource has been detached).
+               """
+       
+    2:     @property
+    2:     def closed(self):
+               """
+               Whether this object has been closed.  A closed object can't
+               be used anymore.
+               """
+               return self._closed
+       
+    1:     def __enter__(self):
+  140:         assert hasattr(self, "close")
+  140:         if self._closed:
+                   raise RuntimeError("%s instance already closed" % (self.__class__,))
+  140:         return self
+       
+    1:     def __exit__(self, exc_type, exc_val, exc_tb):
+  140:         self.close()
+       
+    1:     def __del__(self, _is_shutting_down=_is_shutting_down):
+ 2874:         if not _is_shutting_down():
+ 2874:             if self.close is not None:
+ 2874:                 self.close()
+       
+    1:     def __bool__(self):
+               return bool(self._ptr)
+       
+    1:     def __eq__(self, other):
+               if not hasattr(other, "_ptr"):
+                   return False
+               return ctypes.addressof(self._ptr[0]) == \
+                   ctypes.addressof(other._ptr[0])
+       
+    1:     __nonzero__ = __bool__
+       
+           # XXX useful?
+    1:     def __hash__(self):
+   57:         return hash(ctypes.cast(self._ptr, ctypes.c_void_p).value)

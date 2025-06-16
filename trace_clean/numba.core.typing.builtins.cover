@@ -1,0 +1,1182 @@
+    1: import itertools
+       
+    1: import numpy as np
+    1: import operator
+       
+    1: from numba.core import types, errors
+    1: from numba import prange
+    1: from numba.parfors.parfor import internal_prange
+       
+    1: from numba.core.typing.templates import (AttributeTemplate, ConcreteTemplate,
+                                                AbstractTemplate, infer_global, infer,
+                                                infer_getattr, signature,
+                                                bound_function, make_callable_template)
+       
+    1: from numba.cpython.builtins import get_type_min_value, get_type_max_value
+       
+    1: from numba.core.extending import (
+           typeof_impl, type_callable, models, register_model, make_attribute_wrapper,
+           )
+       
+       
+    3: @infer_global(print)
+    2: class Print(AbstractTemplate):
+    1:     def generic(self, args, kws):
+               for a in args:
+                   sig = self.context.resolve_function_type("print_item", (a,), {})
+                   if sig is None:
+                       raise TypeError("Type %s is not printable." % a)
+                   assert sig.return_type is types.none
+               return signature(types.none, *args)
+       
+    3: @infer
+    2: class PrintItem(AbstractTemplate):
+    1:     key = "print_item"
+       
+    1:     def generic(self, args, kws):
+               arg, = args
+               return signature(types.none, *args)
+       
+       
+    3: @infer_global(abs)
+    2: class Abs(ConcreteTemplate):
+    6:     int_cases = [signature(ty, ty) for ty in sorted(types.signed_domain)]
+    6:     uint_cases = [signature(ty, ty) for ty in sorted(types.unsigned_domain)]
+    4:     real_cases = [signature(ty, ty) for ty in sorted(types.real_domain)]
+    7:     complex_cases = [signature(ty.underlying_float, ty)
+    3:                      for ty in sorted(types.complex_domain)]
+    1:     cases = int_cases + uint_cases +  real_cases + complex_cases
+       
+       
+    3: @infer_global(slice)
+    2: class Slice(ConcreteTemplate):
+    1:     cases = [
+    1:         signature(types.slice2_type, types.intp),
+    1:         signature(types.slice2_type, types.none),
+    1:         signature(types.slice2_type, types.none, types.none),
+    1:         signature(types.slice2_type, types.none, types.intp),
+    1:         signature(types.slice2_type, types.intp, types.none),
+    1:         signature(types.slice2_type, types.intp, types.intp),
+    1:         signature(types.slice3_type, types.intp, types.intp, types.intp),
+    1:         signature(types.slice3_type, types.none, types.intp, types.intp),
+    1:         signature(types.slice3_type, types.intp, types.none, types.intp),
+    1:         signature(types.slice3_type, types.intp, types.intp, types.none),
+    1:         signature(types.slice3_type, types.intp, types.none, types.none),
+    1:         signature(types.slice3_type, types.none, types.intp, types.none),
+    1:         signature(types.slice3_type, types.none, types.none, types.intp),
+    1:         signature(types.slice3_type, types.none, types.none, types.none),
+           ]
+       
+       
+    3: @infer_global(range, typing_key=range)
+    2: @infer_global(prange, typing_key=prange)
+    2: @infer_global(internal_prange, typing_key=internal_prange)
+    2: class Range(ConcreteTemplate):
+    1:     cases = [
+    1:         signature(types.range_state32_type, types.int32),
+    1:         signature(types.range_state32_type, types.int32, types.int32),
+    2:         signature(types.range_state32_type, types.int32, types.int32,
+    1:                   types.int32),
+    1:         signature(types.range_state64_type, types.int64),
+    1:         signature(types.range_state64_type, types.int64, types.int64),
+    2:         signature(types.range_state64_type, types.int64, types.int64,
+    1:                   types.int64),
+    1:         signature(types.unsigned_range_state64_type, types.uint64),
+    1:         signature(types.unsigned_range_state64_type, types.uint64, types.uint64),
+    2:         signature(types.unsigned_range_state64_type, types.uint64, types.uint64,
+    1:                   types.uint64),
+           ]
+       
+       
+    3: @infer
+    2: class GetIter(AbstractTemplate):
+    1:     key = "getiter"
+       
+    1:     def generic(self, args, kws):
+   10:         assert not kws
+   10:         [obj] = args
+   10:         if isinstance(obj, types.IterableType):
+   10:             return signature(obj.iterator_type, obj)
+       
+       
+    3: @infer
+    2: class IterNext(AbstractTemplate):
+    1:     key = "iternext"
+       
+    1:     def generic(self, args, kws):
+   10:         assert not kws
+   10:         [it] = args
+   10:         if isinstance(it, types.IteratorType):
+   10:             return signature(types.Pair(it.yield_type, types.boolean), it)
+       
+       
+    3: @infer
+    2: class PairFirst(AbstractTemplate):
+    1:     """
+           Given a heterogeneous pair, return the first element.
+           """
+    1:     key = "pair_first"
+       
+    1:     def generic(self, args, kws):
+               assert not kws
+               [pair] = args
+               if isinstance(pair, types.Pair):
+                   return signature(pair.first_type, pair)
+       
+       
+    3: @infer
+    2: class PairSecond(AbstractTemplate):
+    1:     """
+           Given a heterogeneous pair, return the second element.
+           """
+    1:     key = "pair_second"
+       
+    1:     def generic(self, args, kws):
+               assert not kws
+               [pair] = args
+               if isinstance(pair, types.Pair):
+                   return signature(pair.second_type, pair)
+       
+       
+    1: def choose_result_bitwidth(*inputs):
+   64:     return max(types.intp.bitwidth, *(tp.bitwidth for tp in inputs))
+       
+    1: def choose_result_int(*inputs):
+           """
+           Choose the integer result type for an operation on integer inputs,
+           according to the integer typing NBEP.
+           """
+   20:     bitwidth = choose_result_bitwidth(*inputs)
+   51:     signed = any(tp.signed for tp in inputs)
+   20:     return types.Integer.from_bitwidth(bitwidth, signed)
+       
+       
+       # The "machine" integer types to take into consideration for operator typing
+       # (according to the integer typing NBEP)
+    1: machine_ints = (
+    2:     sorted(set((types.intp, types.int64))) +
+    1:     sorted(set((types.uintp, types.uint64)))
+           )
+       
+       # Explicit integer rules for binary operators; smaller ints will be
+       # automatically upcast.
+   11: integer_binop_cases = tuple(
+    4:     signature(choose_result_int(op1, op2), op1, op2)
+    5:     for op1, op2 in itertools.product(machine_ints, machine_ints)
+           )
+       
+       
+    2: class BinOp(ConcreteTemplate):
+    1:     cases = list(integer_binop_cases)
+    4:     cases += [signature(op, op, op) for op in sorted(types.real_domain)]
+    4:     cases += [signature(op, op, op) for op in sorted(types.complex_domain)]
+       
+       
+    3: @infer_global(operator.add)
+    2: class BinOpAdd(BinOp):
+    1:     pass
+       
+       
+    3: @infer_global(operator.iadd)
+    2: class BinOpAdd(BinOp):
+    1:     pass
+       
+       
+    3: @infer_global(operator.sub)
+    2: class BinOpSub(BinOp):
+    1:     pass
+       
+       
+    3: @infer_global(operator.isub)
+    2: class BinOpSub(BinOp):
+    1:     pass
+       
+       
+    3: @infer_global(operator.mul)
+    2: class BinOpMul(BinOp):
+    1:     pass
+       
+       
+    3: @infer_global(operator.imul)
+    2: class BinOpMul(BinOp):
+    1:     pass
+       
+       
+    3: @infer_global(operator.mod)
+    2: class BinOpMod(ConcreteTemplate):
+    1:     cases = list(integer_binop_cases)
+    4:     cases += [signature(op, op, op) for op in sorted(types.real_domain)]
+       
+       
+    3: @infer_global(operator.imod)
+    2: class BinOpMod(ConcreteTemplate):
+    1:     cases = list(integer_binop_cases)
+    4:     cases += [signature(op, op, op) for op in sorted(types.real_domain)]
+       
+       
+    3: @infer_global(operator.truediv)
+    2: class BinOpTrueDiv(ConcreteTemplate):
+   11:     cases = [signature(types.float64, op1, op2)
+    5:              for op1, op2 in itertools.product(machine_ints, machine_ints)]
+    4:     cases += [signature(op, op, op) for op in sorted(types.real_domain)]
+    4:     cases += [signature(op, op, op) for op in sorted(types.complex_domain)]
+       
+       
+    3: @infer_global(operator.itruediv)
+    2: class BinOpTrueDiv(ConcreteTemplate):
+   11:     cases = [signature(types.float64, op1, op2)
+    5:              for op1, op2 in itertools.product(machine_ints, machine_ints)]
+    4:     cases += [signature(op, op, op) for op in sorted(types.real_domain)]
+    4:     cases += [signature(op, op, op) for op in sorted(types.complex_domain)]
+       
+       
+    3: @infer_global(operator.floordiv)
+    2: class BinOpFloorDiv(ConcreteTemplate):
+    1:     cases = list(integer_binop_cases)
+    4:     cases += [signature(op, op, op) for op in sorted(types.real_domain)]
+       
+       
+    3: @infer_global(operator.ifloordiv)
+    2: class BinOpFloorDiv(ConcreteTemplate):
+    1:     cases = list(integer_binop_cases)
+    4:     cases += [signature(op, op, op) for op in sorted(types.real_domain)]
+       
+       
+    3: @infer_global(divmod)
+    2: class DivMod(ConcreteTemplate):
+    1:     _tys = machine_ints + sorted(types.real_domain)
+    6:     cases = [signature(types.UniTuple(ty, 2), ty, ty) for ty in _tys]
+       
+       
+    3: @infer_global(operator.pow)
+    2: class BinOpPower(ConcreteTemplate):
+    1:     cases = list(integer_binop_cases)
+           # Ensure that float32 ** int doesn't go through DP computations
+    9:     cases += [signature(types.float32, types.float32, op)
+    4:               for op in (types.int32, types.int64, types.uint64)]
+    9:     cases += [signature(types.float64, types.float64, op)
+    4:               for op in (types.int32, types.int64, types.uint64)]
+    7:     cases += [signature(op, op, op)
+    3:               for op in sorted(types.real_domain)]
+    7:     cases += [signature(op, op, op)
+    3:               for op in sorted(types.complex_domain)]
+       
+       
+    3: @infer_global(operator.ipow)
+    2: class BinOpPower(ConcreteTemplate):
+    1:     cases = list(integer_binop_cases)
+           # Ensure that float32 ** int doesn't go through DP computations
+    9:     cases += [signature(types.float32, types.float32, op)
+    4:               for op in (types.int32, types.int64, types.uint64)]
+    9:     cases += [signature(types.float64, types.float64, op)
+    4:               for op in (types.int32, types.int64, types.uint64)]
+    7:     cases += [signature(op, op, op)
+    3:               for op in sorted(types.real_domain)]
+    7:     cases += [signature(op, op, op)
+    3:               for op in sorted(types.complex_domain)]
+       
+       
+    3: @infer_global(pow)
+    2: class PowerBuiltin(BinOpPower):
+           # TODO add 3 operand version
+    1:     pass
+       
+       
+    2: class BitwiseShiftOperation(ConcreteTemplate):
+           # For bitshifts, only the first operand's signedness matters
+           # to choose the operation's signedness (the second operand
+           # should always be positive but will generally be considered
+           # signed anyway, since it's often a constant integer).
+           # (also, see issue #1995 for right-shifts)
+       
+           # The RHS type is fixed to 64-bit signed/unsigned ints.
+           # The implementation will always cast the operands to the width of the
+           # result type, which is the widest between the LHS type and (u)intp.
+   27:     cases = [signature(max(op, types.intp), op, op2)
+    5:              for op in sorted(types.signed_domain)
+   12:              for op2 in [types.uint64, types.int64]]
+   27:     cases += [signature(max(op, types.uintp), op, op2)
+    5:               for op in sorted(types.unsigned_domain)
+   12:               for op2 in [types.uint64, types.int64]]
+    1:     unsafe_casting = False
+       
+       
+    3: @infer_global(operator.lshift)
+    2: class BitwiseLeftShift(BitwiseShiftOperation):
+    1:     pass
+       
+    3: @infer_global(operator.ilshift)
+    2: class BitwiseLeftShift(BitwiseShiftOperation):
+    1:     pass
+       
+       
+    3: @infer_global(operator.rshift)
+    2: class BitwiseRightShift(BitwiseShiftOperation):
+    1:     pass
+       
+       
+    3: @infer_global(operator.irshift)
+    2: class BitwiseRightShift(BitwiseShiftOperation):
+    1:     pass
+       
+       
+    2: class BitwiseLogicOperation(BinOp):
+    1:     cases = [signature(types.boolean, types.boolean, types.boolean)]
+    1:     cases += list(integer_binop_cases)
+    1:     unsafe_casting = False
+       
+       
+    3: @infer_global(operator.and_)
+    2: class BitwiseAnd(BitwiseLogicOperation):
+    1:     pass
+       
+       
+    3: @infer_global(operator.iand)
+    2: class BitwiseAnd(BitwiseLogicOperation):
+    1:     pass
+       
+       
+    3: @infer_global(operator.or_)
+    2: class BitwiseOr(BitwiseLogicOperation):
+    1:     pass
+       
+       
+    3: @infer_global(operator.ior)
+    2: class BitwiseOr(BitwiseLogicOperation):
+    1:     pass
+       
+       
+    3: @infer_global(operator.xor)
+    2: class BitwiseXor(BitwiseLogicOperation):
+    1:     pass
+       
+       
+    3: @infer_global(operator.ixor)
+    2: class BitwiseXor(BitwiseLogicOperation):
+    1:     pass
+       
+       
+       # Bitwise invert and negate are special: we must not upcast the operand
+       # for unsigned numbers, as that would change the result.
+       # (i.e. ~np.int8(0) == 255 but ~np.int32(0) == 4294967295).
+       
+    3: @infer_global(operator.invert)
+    2: class BitwiseInvert(ConcreteTemplate):
+           # Note Numba follows the Numpy semantics of returning a bool,
+           # while Python returns an int.  This makes it consistent with
+           # np.invert() and makes array expressions correct.
+    1:     cases = [signature(types.boolean, types.boolean)]
+    6:     cases += [signature(choose_result_int(op), op) for op in sorted(types.unsigned_domain)]
+    6:     cases += [signature(choose_result_int(op), op) for op in sorted(types.signed_domain)]
+       
+    1:     unsafe_casting = False
+       
+       
+    2: class UnaryOp(ConcreteTemplate):
+    6:     cases = [signature(choose_result_int(op), op) for op in sorted(types.unsigned_domain)]
+    6:     cases += [signature(choose_result_int(op), op) for op in sorted(types.signed_domain)]
+    4:     cases += [signature(op, op) for op in sorted(types.real_domain)]
+    4:     cases += [signature(op, op) for op in sorted(types.complex_domain)]
+    1:     cases += [signature(types.intp, types.boolean)]
+       
+       
+    3: @infer_global(operator.neg)
+    2: class UnaryNegate(UnaryOp):
+    1:     pass
+       
+       
+    3: @infer_global(operator.pos)
+    2: class UnaryPositive(UnaryOp):
+    1:    pass
+       
+       
+    3: @infer_global(operator.not_)
+    2: class UnaryNot(ConcreteTemplate):
+    1:     cases = [signature(types.boolean, types.boolean)]
+    6:     cases += [signature(types.boolean, op) for op in sorted(types.signed_domain)]
+    6:     cases += [signature(types.boolean, op) for op in sorted(types.unsigned_domain)]
+    4:     cases += [signature(types.boolean, op) for op in sorted(types.real_domain)]
+    4:     cases += [signature(types.boolean, op) for op in sorted(types.complex_domain)]
+       
+       
+    2: class OrderedCmpOp(ConcreteTemplate):
+    1:     cases = [signature(types.boolean, types.boolean, types.boolean)]
+    6:     cases += [signature(types.boolean, op, op) for op in sorted(types.signed_domain)]
+    6:     cases += [signature(types.boolean, op, op) for op in sorted(types.unsigned_domain)]
+    4:     cases += [signature(types.boolean, op, op) for op in sorted(types.real_domain)]
+       
+       
+    2: class UnorderedCmpOp(ConcreteTemplate):
+    7:     cases = OrderedCmpOp.cases + [
+    3:         signature(types.boolean, op, op) for op in sorted(types.complex_domain)]
+       
+       
+    3: @infer_global(operator.lt)
+    2: class CmpOpLt(OrderedCmpOp):
+    1:     pass
+       
+       
+    3: @infer_global(operator.le)
+    2: class CmpOpLe(OrderedCmpOp):
+    1:     pass
+       
+       
+    3: @infer_global(operator.gt)
+    2: class CmpOpGt(OrderedCmpOp):
+    1:     pass
+       
+       
+    3: @infer_global(operator.ge)
+    2: class CmpOpGe(OrderedCmpOp):
+    1:     pass
+       
+       
+       # more specific overloads should be registered first
+    3: @infer_global(operator.eq)
+    2: class ConstOpEq(AbstractTemplate):
+    1:     def generic(self, args, kws):
+   62:         assert not kws
+   62:         (arg1, arg2) = args
+   62:         if isinstance(arg1, types.Literal) and isinstance(arg2, types.Literal):
+    3:             return signature(types.boolean, arg1, arg2)
+       
+       
+    3: @infer_global(operator.ne)
+    2: class ConstOpNotEq(ConstOpEq):
+    1:     pass
+       
+       
+    3: @infer_global(operator.eq)
+    2: class CmpOpEq(UnorderedCmpOp):
+    1:     pass
+       
+       
+    3: @infer_global(operator.ne)
+    2: class CmpOpNe(UnorderedCmpOp):
+    1:     pass
+       
+       
+    2: class TupleCompare(AbstractTemplate):
+    1:     def generic(self, args, kws):
+               [lhs, rhs] = args
+               if isinstance(lhs, types.BaseTuple) and isinstance(rhs, types.BaseTuple):
+                   for u, v in zip(lhs, rhs):
+                       # Check element-wise comparability
+                       res = self.context.resolve_function_type(self.key, (u, v), {})
+                       if res is None:
+                           break
+                   else:
+                       return signature(types.boolean, lhs, rhs)
+       
+       
+    3: @infer_global(operator.eq)
+    2: class TupleEq(TupleCompare):
+    1:     pass
+       
+       
+    3: @infer_global(operator.ne)
+    2: class TupleNe(TupleCompare):
+    1:     pass
+       
+       
+    3: @infer_global(operator.ge)
+    2: class TupleGe(TupleCompare):
+    1:     pass
+       
+       
+    3: @infer_global(operator.gt)
+    2: class TupleGt(TupleCompare):
+    1:     pass
+       
+       
+    3: @infer_global(operator.le)
+    2: class TupleLe(TupleCompare):
+    1:     pass
+       
+       
+    3: @infer_global(operator.lt)
+    2: class TupleLt(TupleCompare):
+    1:     pass
+       
+       
+    3: @infer_global(operator.add)
+    2: class TupleAdd(AbstractTemplate):
+    1:     def generic(self, args, kws):
+               if len(args) == 2:
+                   a, b = args
+                   if (isinstance(a, types.BaseTuple) and isinstance(b, types.BaseTuple)
+                       and not isinstance(a, types.BaseNamedTuple)
+                       and not isinstance(b, types.BaseNamedTuple)):
+                       res = types.BaseTuple.from_types(tuple(a) + tuple(b))
+                       return signature(res, a, b)
+       
+       
+    2: class CmpOpIdentity(AbstractTemplate):
+    1:     def generic(self, args, kws):
+               [lhs, rhs] = args
+               return signature(types.boolean, lhs, rhs)
+       
+       
+    3: @infer_global(operator.is_)
+    2: class CmpOpIs(CmpOpIdentity):
+    1:     pass
+       
+       
+    3: @infer_global(operator.is_not)
+    2: class CmpOpIsNot(CmpOpIdentity):
+    1:     pass
+       
+       
+    1: def normalize_1d_index(index):
+           """
+           Normalize the *index* type (an integer or slice) for indexing a 1D
+           sequence.
+           """
+   15:     if isinstance(index, types.SliceType):
+               return index
+       
+   15:     elif isinstance(index, types.Integer):
+   15:         return types.intp if index.signed else types.uintp
+       
+       
+    3: @infer_global(operator.getitem)
+    2: class GetItemCPointer(AbstractTemplate):
+    1:     def generic(self, args, kws):
+   80:         assert not kws
+   80:         ptr, idx = args
+   80:         if isinstance(ptr, types.CPointer) and isinstance(idx, types.Integer):
+    8:             return signature(ptr.dtype, ptr, normalize_1d_index(idx))
+       
+       
+    3: @infer_global(operator.setitem)
+    2: class SetItemCPointer(AbstractTemplate):
+    1:     def generic(self, args, kws):
+   34:         assert not kws
+   34:         ptr, idx, val = args
+   34:         if isinstance(ptr, types.CPointer) and isinstance(idx, types.Integer):
+    4:             return signature(types.none, ptr, normalize_1d_index(idx), ptr.dtype)
+       
+       
+    3: @infer_global(len)
+    2: class Len(AbstractTemplate):
+    1:     def generic(self, args, kws):
+    4:         assert not kws
+    4:         (val,) = args
+    4:         if isinstance(val, (types.Buffer, types.BaseTuple)):
+                   return signature(types.intp, val)
+    4:         elif isinstance(val, (types.RangeType)):
+                   return signature(val.dtype, val)
+       
+    3: @infer_global(tuple)
+    2: class TupleConstructor(AbstractTemplate):
+    1:     def generic(self, args, kws):
+               assert not kws
+               # empty tuple case
+               if len(args) == 0:
+                   return signature(types.Tuple(()))
+               (val,) = args
+               # tuple as input
+               if isinstance(val, types.BaseTuple):
+                   return signature(val, val)
+       
+       
+    3: @infer_global(operator.contains)
+    2: class Contains(AbstractTemplate):
+    1:     def generic(self, args, kws):
+               assert not kws
+               (seq, val) = args
+       
+               if isinstance(seq, (types.Sequence)):
+                   return signature(types.boolean, seq, val)
+       
+    3: @infer_global(operator.truth)
+    2: class TupleBool(AbstractTemplate):
+    1:     def generic(self, args, kws):
+               assert not kws
+               (val,) = args
+               if isinstance(val, (types.BaseTuple)):
+                   return signature(types.boolean, val)
+       
+       
+    3: @infer
+    2: class StaticGetItemTuple(AbstractTemplate):
+    1:     key = "static_getitem"
+       
+    1:     def generic(self, args, kws):
+   20:         tup, idx = args
+   20:         ret = None
+   20:         if not isinstance(tup, types.BaseTuple):
+    8:             return
+   12:         if isinstance(idx, int):
+   12:             try:
+   12:                 ret = tup.types[idx]
+                   except IndexError:
+                       raise errors.NumbaIndexError("tuple index out of range")
+               elif isinstance(idx, slice):
+                   ret = types.BaseTuple.from_types(tup.types[idx])
+   12:         if ret is not None:
+   12:             sig = signature(ret, *args)
+   12:             return sig
+       
+       
+    3: @infer
+    2: class StaticGetItemLiteralList(AbstractTemplate):
+    1:     key = "static_getitem"
+       
+    1:     def generic(self, args, kws):
+    8:         tup, idx = args
+    8:         ret = None
+    8:         if not isinstance(tup, types.LiteralList):
+    8:             return
+               if isinstance(idx, int):
+                   ret = tup.types[idx]
+               if ret is not None:
+                   sig = signature(ret, *args)
+                   return sig
+       
+       
+    3: @infer
+    2: class StaticGetItemLiteralStrKeyDict(AbstractTemplate):
+    1:     key = "static_getitem"
+       
+    1:     def generic(self, args, kws):
+    8:         tup, idx = args
+    8:         ret = None
+    8:         if not isinstance(tup, types.LiteralStrKeyDict):
+    8:             return
+               if isinstance(idx, str):
+                   if idx in tup.fields:
+                       lookup = tup.fields.index(idx)
+                   else:
+                       raise errors.NumbaKeyError(f"Key '{idx}' is not in dict.")
+                   ret = tup.types[lookup]
+               if ret is not None:
+                   sig = signature(ret, *args)
+                   return sig
+       
+    3: @infer
+    2: class StaticGetItemClass(AbstractTemplate):
+    1:     """This handles the "static_getitem" when a Numba type is subscripted e.g:
+           var = typed.List.empty_list(float64[::1, :])
+           It only allows this on simple numerical types. Compound types, like
+           records, are not supported.
+           """
+    1:     key = "static_getitem"
+       
+    1:     def generic(self, args, kws):
+    8:         clazz, idx = args
+    8:         if not isinstance(clazz, types.NumberClass):
+    8:             return
+               ret = clazz.dtype[idx]
+               sig = signature(ret, *args)
+               return sig
+       
+       
+       # Generic implementation for "not in"
+       
+    3: @infer
+    2: class GenericNotIn(AbstractTemplate):
+    1:     key = "not in"
+       
+    1:     def generic(self, args, kws):
+               args = args[::-1]
+               sig = self.context.resolve_function_type(operator.contains, args, kws)
+               return signature(sig.return_type, *sig.args[::-1])
+       
+       
+       #-------------------------------------------------------------------------------
+       
+    3: @infer_getattr
+    2: class MemoryViewAttribute(AttributeTemplate):
+    1:     key = types.MemoryView
+       
+    1:     def resolve_contiguous(self, buf):
+               return types.boolean
+       
+    1:     def resolve_c_contiguous(self, buf):
+               return types.boolean
+       
+    1:     def resolve_f_contiguous(self, buf):
+               return types.boolean
+       
+    1:     def resolve_itemsize(self, buf):
+               return types.intp
+       
+    1:     def resolve_nbytes(self, buf):
+               return types.intp
+       
+    1:     def resolve_readonly(self, buf):
+               return types.boolean
+       
+    1:     def resolve_shape(self, buf):
+               return types.UniTuple(types.intp, buf.ndim)
+       
+    1:     def resolve_strides(self, buf):
+               return types.UniTuple(types.intp, buf.ndim)
+       
+    1:     def resolve_ndim(self, buf):
+               return types.intp
+       
+       
+       #-------------------------------------------------------------------------------
+       
+       
+    3: @infer_getattr
+    2: class BooleanAttribute(AttributeTemplate):
+    1:     key = types.Boolean
+       
+    1:     def resolve___class__(self, ty):
+               return types.NumberClass(ty)
+       
+    2:     @bound_function("number.item")
+    2:     def resolve_item(self, ty, args, kws):
+               assert not kws
+               if not args:
+                   return signature(ty)
+       
+       
+    3: @infer_getattr
+    2: class NumberAttribute(AttributeTemplate):
+    1:     key = types.Number
+       
+    1:     def resolve___class__(self, ty):
+    4:         return types.NumberClass(ty)
+       
+    1:     def resolve_real(self, ty):
+               return getattr(ty, "underlying_float", ty)
+       
+    1:     def resolve_imag(self, ty):
+               return getattr(ty, "underlying_float", ty)
+       
+    2:     @bound_function("complex.conjugate")
+    2:     def resolve_conjugate(self, ty, args, kws):
+               assert not args
+               assert not kws
+               return signature(ty)
+       
+    2:     @bound_function("number.item")
+    2:     def resolve_item(self, ty, args, kws):
+               assert not kws
+               if not args:
+                   return signature(ty)
+       
+       
+    3: @infer_getattr
+    2: class NPTimedeltaAttribute(AttributeTemplate):
+    1:     key = types.NPTimedelta
+       
+    1:     def resolve___class__(self, ty):
+               return types.NumberClass(ty)
+       
+       
+    3: @infer_getattr
+    2: class NPDatetimeAttribute(AttributeTemplate):
+    1:     key = types.NPDatetime
+       
+    1:     def resolve___class__(self, ty):
+               return types.NumberClass(ty)
+       
+       
+    3: @infer_getattr
+    2: class SliceAttribute(AttributeTemplate):
+    1:     key = types.SliceType
+       
+    1:     def resolve_start(self, ty):
+               return types.intp
+       
+    1:     def resolve_stop(self, ty):
+               return types.intp
+       
+    1:     def resolve_step(self, ty):
+               return types.intp
+       
+    2:     @bound_function("slice.indices")
+    2:     def resolve_indices(self, ty, args, kws):
+               assert not kws
+               if len(args) != 1:
+                   raise errors.NumbaTypeError(
+                       "indices() takes exactly one argument (%d given)" % len(args)
+                   )
+               typ, = args
+               if not isinstance(typ, types.Integer):
+                   raise errors.NumbaTypeError(
+                       "'%s' object cannot be interpreted as an integer" % typ
+                   )
+               return signature(types.UniTuple(types.intp, 3), types.intp)
+       
+       
+       #-------------------------------------------------------------------------------
+       
+       
+    3: @infer_getattr
+    2: class NumberClassAttribute(AttributeTemplate):
+    1:     key = types.NumberClass
+       
+    1:     def resolve___call__(self, classty):
+               """
+               Resolve a NumPy number class's constructor (e.g. calling numpy.int32(...))
+               """
+    4:         ty = classty.instance_type
+       
+    4:         def typer(val):
+    4:             if isinstance(val, (types.BaseTuple, types.Sequence)):
+                       # Array constructor, e.g. np.int32([1, 2])
+                       fnty = self.context.resolve_value_type(np.array)
+                       sig = fnty.get_call_type(self.context, (val, types.DType(ty)),
+                                                {})
+                       return sig.return_type
+    4:             elif isinstance(val, (types.Number, types.Boolean, types.IntEnumMember)):
+                        # Scalar constructor, e.g. np.int32(42)
+    4:                  return ty
+                   elif isinstance(val, (types.NPDatetime, types.NPTimedelta)):
+                       # Constructor cast from datetime-like, e.g.
+                       # > np.int64(np.datetime64("2000-01-01"))
+                       if ty.bitwidth == 64:
+                           return ty
+                       else:
+                           msg = (f"Cannot cast {val} to {ty} as {ty} is not 64 bits "
+                                  "wide.")
+                           raise errors.TypingError(msg)
+                   else:
+                       if (isinstance(val, types.Array) and val.ndim == 0 and
+                           val.dtype == ty):
+                           # This is 0d array -> scalar degrading
+                           return ty
+                       else:
+                           # unsupported
+                           msg = f"Casting {val} to {ty} directly is unsupported."
+                           if isinstance(val, types.Array):
+                               # array casts are supported a different way.
+                               msg += f" Try doing '<array>.astype(np.{ty})' instead"
+                           raise errors.TypingError(msg)
+       
+    4:         return types.Function(make_callable_template(key=ty, typer=typer))
+       
+       
+    3: @infer_getattr
+    2: class TypeRefAttribute(AttributeTemplate):
+    1:     key = types.TypeRef
+       
+    1:     def resolve___call__(self, classty):
+               """
+               Resolve a core number's constructor (e.g. calling int(...))
+       
+               Note:
+       
+               This is needed because of the limitation of the current type-system
+               implementation.  Specifically, the lack of a higher-order type
+               (i.e. passing the ``DictType`` vs ``DictType(key_type, value_type)``)
+               """
+               ty = classty.instance_type
+       
+               if isinstance(ty, type) and issubclass(ty, types.Type):
+                   # Redirect the typing to a:
+                   #   @type_callable(ty)
+                   #   def typeddict_call(context):
+                   #        ...
+                   # For example, see numba/typed/typeddict.py
+                   #   @type_callable(DictType)
+                   #   def typeddict_call(context):
+                   class Redirect(object):
+       
+                       def __init__(self, context):
+                           self.context =  context
+       
+                       def __call__(self, *args, **kwargs):
+                           result = self.context.resolve_function_type(ty, args, kwargs)
+                           if hasattr(result, "pysig"):
+                               self.pysig = result.pysig
+                           return result
+       
+                   return types.Function(make_callable_template(key=ty,
+                                                                typer=Redirect(self.context)))
+       
+       
+       #------------------------------------------------------------------------------
+       
+       
+    2: class MinMaxBase(AbstractTemplate):
+       
+    1:     def _unify_minmax(self, tys):
+   12:         for ty in tys:
+    8:             if not isinstance(ty, (types.Number, types.NPDatetime, types.NPTimedelta)):
+                       return
+    4:         return self.context.unify_types(*tys)
+       
+    1:     def generic(self, args, kws):
+               """
+               Resolve a min() or max() call.
+               """
+    4:         assert not kws
+       
+    4:         if not args:
+                   return
+    4:         if len(args) == 1:
+                   # max(arg) only supported if arg is an iterable
+                   if isinstance(args[0], types.BaseTuple):
+                       tys = list(args[0])
+                       if not tys:
+                           raise TypeError("%s() argument is an empty tuple"
+                                           % (self.key.__name__,))
+                   else:
+                       return
+               else:
+                   # max(*args)
+    4:             tys = args
+    4:         retty = self._unify_minmax(tys)
+    4:         if retty is not None:
+    4:             return signature(retty, *args)
+       
+       
+    3: @infer_global(max)
+    2: class Max(MinMaxBase):
+    1:     pass
+       
+       
+    3: @infer_global(min)
+    2: class Min(MinMaxBase):
+    1:     pass
+       
+       
+    3: @infer_global(round)
+    2: class Round(ConcreteTemplate):
+    1:     cases = [
+    1:         signature(types.intp, types.float32),
+    1:         signature(types.int64, types.float64),
+    1:         signature(types.float32, types.float32, types.intp),
+    1:         signature(types.float64, types.float64, types.intp),
+           ]
+       
+       
+       #------------------------------------------------------------------------------
+       
+       
+    3: @infer_global(bool)
+    2: class Bool(AbstractTemplate):
+       
+    1:     def generic(self, args, kws):
+   70:         assert not kws
+   70:         [arg] = args
+   70:         if isinstance(arg, (types.Boolean, types.Number)):
+   70:             return signature(types.boolean, arg)
+               # XXX typing for bool cannot be polymorphic because of the
+               # types.Function thing, so we redirect to the operator.truth
+               # intrinsic.
+               return self.context.resolve_function_type(operator.truth, args, kws)
+       
+       
+    3: @infer_global(int)
+    2: class Int(AbstractTemplate):
+       
+    1:     def generic(self, args, kws):
+    4:         if kws:
+                   raise errors.NumbaAssertionError('kws not supported')
+       
+    4:         [arg] = args
+       
+    4:         if isinstance(arg, types.Integer):
+                   return signature(arg, arg)
+    4:         if isinstance(arg, (types.Float, types.Boolean)):
+    4:             return signature(types.intp, arg)
+               if isinstance(arg, types.NPDatetime):
+                   if arg.unit == 'ns':
+                       return signature(types.int64, arg)
+                   else:
+                       raise errors.NumbaTypeError(f"Only datetime64[ns] can be converted, but got datetime64[{arg.unit}]")
+               if isinstance(arg, types.NPTimedelta):
+                   return signature(types.int64, arg)
+       
+       
+    3: @infer_global(float)
+    2: class Float(AbstractTemplate):
+       
+    1:     def generic(self, args, kws):
+    2:         assert not kws
+       
+    2:         [arg] = args
+       
+    2:         if arg not in types.number_domain:
+                   raise errors.NumbaTypeError("float() only support for numbers")
+       
+    2:         if arg in types.complex_domain:
+                   raise errors.NumbaTypeError("float() does not support complex")
+       
+    2:         if arg in types.integer_domain:
+    2:             return signature(types.float64, arg)
+       
+               elif arg in types.real_domain:
+                   return signature(arg, arg)
+       
+       
+    3: @infer_global(complex)
+    2: class Complex(AbstractTemplate):
+       
+    1:     def generic(self, args, kws):
+               assert not kws
+       
+               if len(args) == 1:
+                   [arg] = args
+                   if arg not in types.number_domain:
+                       raise errors.NumbaTypeError("complex() only support for numbers")
+                   if arg == types.float32:
+                       return signature(types.complex64, arg)
+                   else:
+                       return signature(types.complex128, arg)
+       
+               elif len(args) == 2:
+                   [real, imag] = args
+                   if (real not in types.number_domain or
+                       imag not in types.number_domain):
+                       raise errors.NumbaTypeError("complex() only support for numbers")
+                   if real == imag == types.float32:
+                       return signature(types.complex64, real, imag)
+                   else:
+                       return signature(types.complex128, real, imag)
+       
+       
+       #------------------------------------------------------------------------------
+       
+    3: @infer_global(enumerate)
+    2: class Enumerate(AbstractTemplate):
+       
+    1:     def generic(self, args, kws):
+               assert not kws
+               it = args[0]
+               if len(args) > 1 and not isinstance(args[1], types.Integer):
+                   raise errors.NumbaTypeError("Only integers supported as start "
+                                               "value in enumerate")
+               elif len(args) > 2:
+                   #let python raise its own error
+                   enumerate(*args)
+       
+               if isinstance(it, types.IterableType):
+                   enumerate_type = types.EnumerateType(it)
+                   return signature(enumerate_type, *args)
+       
+       
+    3: @infer_global(zip)
+    2: class Zip(AbstractTemplate):
+       
+    1:     def generic(self, args, kws):
+               assert not kws
+               if all(isinstance(it, types.IterableType) for it in args):
+                   zip_type = types.ZipType(args)
+                   return signature(zip_type, *args)
+       
+       
+    3: @infer_global(iter)
+    2: class Iter(AbstractTemplate):
+       
+    1:     def generic(self, args, kws):
+               assert not kws
+               if len(args) == 1:
+                   it = args[0]
+                   if isinstance(it, types.IterableType):
+                       return signature(it.iterator_type, *args)
+       
+       
+    3: @infer_global(next)
+    2: class Next(AbstractTemplate):
+       
+    1:     def generic(self, args, kws):
+               assert not kws
+               if len(args) == 1:
+                   it = args[0]
+                   if isinstance(it, types.IteratorType):
+                       return signature(it.yield_type, *args)
+       
+       
+       #------------------------------------------------------------------------------
+       
+    3: @infer_global(type)
+    2: class TypeBuiltin(AbstractTemplate):
+       
+    1:     def generic(self, args, kws):
+    4:         assert not kws
+    4:         if len(args) == 1:
+                   # One-argument type() -> return the __class__
+                   # Avoid literal types
+    4:             arg = types.unliteral(args[0])
+    4:             classty = self.context.resolve_getattr(arg, "__class__")
+    4:             if classty is not None:
+    4:                 return signature(classty, *args)
+       
+       
+       #------------------------------------------------------------------------------
+       
+    3: @infer_getattr
+    2: class OptionalAttribute(AttributeTemplate):
+    1:     key = types.Optional
+       
+    1:     def generic_resolve(self, optional, attr):
+               return self.context.resolve_getattr(optional.type, attr)
+       
+       #------------------------------------------------------------------------------
+       
+    3: @infer_getattr
+    2: class DeferredAttribute(AttributeTemplate):
+    1:     key = types.DeferredType
+       
+    1:     def generic_resolve(self, deferred, attr):
+               return self.context.resolve_getattr(deferred.get(), attr)
+       
+       #------------------------------------------------------------------------------
+       
+    3: @infer_global(get_type_min_value)
+    2: @infer_global(get_type_max_value)
+    2: class MinValInfer(AbstractTemplate):
+    1:     def generic(self, args, kws):
+               assert not kws
+               assert len(args) == 1
+               if isinstance(args[0], (types.DType, types.NumberClass)):
+                   return signature(args[0].dtype, *args)
+       
+       
+       #------------------------------------------------------------------------------
+       
+       
+    2: class IndexValue(object):
+    1:     """
+           Index and value
+           """
+    1:     def __init__(self, ind, val):
+               self.index = ind
+               self.value = val
+       
+    1:     def __repr__(self):
+               return 'IndexValue(%f, %f)' % (self.index, self.value)
+       
+       
+    2: class IndexValueType(types.Type):
+    1:     def __init__(self, val_typ):
+               self.val_typ = val_typ
+               super(IndexValueType, self).__init__(
+                                           name='IndexValueType({})'.format(val_typ))
+       
+       
+    2: @typeof_impl.register(IndexValue)
+    2: def typeof_index(val, c):
+           val_typ = typeof_impl(val.value, c)
+           return IndexValueType(val_typ)
+       
+       
+    2: @type_callable(IndexValue)
+    2: def type_index_value(context):
+           def typer(ind, mval):
+               if ind == types.intp or ind == types.uintp:
+                   return IndexValueType(mval)
+           return typer
+       
+       
+    3: @register_model(IndexValueType)
+    2: class IndexValueModel(models.StructModel):
+    1:     def __init__(self, dmm, fe_type):
+               members = [
+                   ('index', types.intp),
+                   ('value', fe_type.val_typ),
+                   ]
+               models.StructModel.__init__(self, dmm, fe_type, members)
+       
+       
+    1: make_attribute_wrapper(IndexValueType, 'index', 'index')
+    1: make_attribute_wrapper(IndexValueType, 'value', 'value')

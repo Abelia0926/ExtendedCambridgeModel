@@ -1,0 +1,47 @@
+    1: from __future__ import annotations
+       
+    1: from typing import TYPE_CHECKING, Any, Sequence, Union
+       
+    1: from packaging.version import parse
+    1: from pandas import DataFrame, Series
+       
+    1: if TYPE_CHECKING:
+           import numpy as np
+       
+           if parse(np.__version__) < parse("1.22.0"):
+               raise NotImplementedError(
+                   "NumPy 1.22.0 or later required for type checking"
+               )
+           from numpy.typing import (
+               ArrayLike as ArrayLike,
+               DTypeLike,
+               NDArray,
+               _FloatLike_co,
+               _UIntLike_co,
+           )
+       
+           _ExtendedFloatLike_co = Union[_FloatLike_co, _UIntLike_co]
+           NumericArray = NDArray[Any, np.dtype[_ExtendedFloatLike_co]]
+           Float64Array = NDArray[Any, np.double]
+           ArrayLike1D = Union[Sequence[Union[float, int]], NumericArray, Series]
+           ArrayLike2D = Union[
+               Sequence[Sequence[Union[float, int]]], NumericArray, DataFrame
+           ]
+       else:
+    1:     ArrayLike = Any
+    1:     DTypeLike = Any
+    1:     Float64Array = Any
+    1:     NumericArray = Any
+    1:     ArrayLike1D = Any
+    1:     ArrayLike2D = Any
+    1:     NDArray = Any
+       
+    1: __all__ = [
+           "ArrayLike",
+           "DTypeLike",
+           "Float64Array",
+           "ArrayLike1D",
+           "ArrayLike2D",
+           "NDArray",
+           "NumericArray",
+       ]

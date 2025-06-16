@@ -1,0 +1,38 @@
+       #!/usr/bin/env python
+       # -*- coding: utf-8 -*-
+       #
+       # SPDX-License-Identifier: LGPL-3.0-or-later
+       # Copyright 2016-2022 Stéphane Caron and the qpsolvers contributors
+       
+    1: """
+       Exceptions from qpsolvers.
+       
+       We catch all solver exceptions and re-throw them in a qpsolvers-owned exception
+       to avoid abstraction leakage. See this `design decision
+       <https://github.com/getparthenon/parthenon/wiki/Design-Decision:-Throw-Custom-Exceptions>`__
+       for more details on the rationale behind this choice.
+       """
+       
+       
+    2: class QPError(Exception):
+    1:     """Base class for qpsolvers exceptions."""
+       
+       
+    2: class NoSolverSelected(QPError):
+    1:     """Exception raised when the `solver` keyword argument is not set."""
+       
+       
+    2: class ParamError(QPError):
+    1:     """Exception raised when solver parameters are incorrect."""
+       
+       
+    2: class ProblemError(QPError):
+    1:     """Exception raised when a quadratic program is malformed."""
+       
+       
+    2: class SolverNotFound(QPError):
+    1:     """Exception raised when a requested solver is not found."""
+       
+       
+    2: class SolverError(QPError):
+    1:     """Exception raised when a solver failed."""

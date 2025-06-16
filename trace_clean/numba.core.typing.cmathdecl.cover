@@ -1,0 +1,44 @@
+    1: import cmath
+       
+    1: from numba.core import types, utils
+    1: from numba.core.typing.templates import (AbstractTemplate, ConcreteTemplate,
+                                           signature, Registry)
+       
+    1: registry = Registry()
+    1: infer_global = registry.register_global
+       
+       # TODO: support non-complex arguments (floats and ints)
+       
+       
+    3: @infer_global(cmath.acos)
+    2: @infer_global(cmath.asin)
+    2: @infer_global(cmath.asinh)
+    2: @infer_global(cmath.atan)
+    2: @infer_global(cmath.atanh)
+    2: @infer_global(cmath.cos)
+    2: @infer_global(cmath.exp)
+    2: @infer_global(cmath.sin)
+    2: @infer_global(cmath.sqrt)
+    2: @infer_global(cmath.tan)
+    2: class CMath_unary(ConcreteTemplate):
+    4:     cases = [signature(tp, tp) for tp in sorted(types.complex_domain)]
+       
+       
+    3: @infer_global(cmath.isinf)
+    2: @infer_global(cmath.isnan)
+    2: class CMath_predicate(ConcreteTemplate):
+    5:     cases = [signature(types.boolean, tp) for tp in
+    1:              sorted(types.complex_domain)]
+       
+       
+    3: @infer_global(cmath.isfinite)
+    2: class CMath_isfinite(CMath_predicate):
+    1:     pass
+       
+       
+    3: @infer_global(cmath.log)
+    2: class Cmath_log(ConcreteTemplate):
+           # unary cmath.log()
+    4:     cases = [signature(tp, tp) for tp in sorted(types.complex_domain)]
+           # binary cmath.log()
+    4:     cases += [signature(tp, tp, tp) for tp in sorted(types.complex_domain)]

@@ -1,0 +1,104 @@
+    1: """
+       Helper classes / mixins for defining types.
+       """
+       
+    1: from .abstract import ArrayCompatible, Dummy, IterableType, IteratorType
+    1: from numba.core.errors import NumbaTypeError, NumbaValueError
+       
+       
+    2: class Opaque(Dummy):
+    1:     """
+           A type that is a opaque pointer.
+           """
+       
+       
+    2: class SimpleIterableType(IterableType):
+       
+    1:     def __init__(self, name, iterator_type):
+               self._iterator_type = iterator_type
+               super(SimpleIterableType, self).__init__(name)
+       
+    2:     @property
+    2:     def iterator_type(self):
+   11:         return self._iterator_type
+       
+       
+    2: class SimpleIteratorType(IteratorType):
+       
+    1:     def __init__(self, name, yield_type):
+    6:         self._yield_type = yield_type
+    6:         super(SimpleIteratorType, self).__init__(name)
+       
+    2:     @property
+    2:     def yield_type(self):
+   12:         return self._yield_type
+       
+       
+    2: class Buffer(IterableType, ArrayCompatible):
+    1:     """
+           Type class for objects providing the buffer protocol.
+           Derived classes exist for more specific cases.
+           """
+    1:     mutable = True
+    1:     slice_is_copy = False
+    1:     aligned = True
+       
+           # CS and FS are not reserved for inner contig but strided
+    1:     LAYOUTS = frozenset(['C', 'F', 'CS', 'FS', 'A'])
+       
+    1:     def __init__(self, dtype, ndim, layout, readonly=False, name=None):
+   67:         from .misc import unliteral
+       
+   67:         if isinstance(dtype, Buffer):
+                   msg = ("The dtype of a Buffer type cannot itself be a Buffer type, "
+                          "this is unsupported behaviour."
+                          "\nThe dtype requested for the unsupported Buffer was: {}.")
+                   raise NumbaTypeError(msg.format(dtype))
+   67:         if layout not in self.LAYOUTS:
+                   raise NumbaValueError("Invalid layout '%s'" % layout)
+   67:         self.dtype = unliteral(dtype)
+   67:         self.ndim = ndim
+   67:         self.layout = layout
+   67:         if readonly:
+    1:             self.mutable = False
+   67:         if name is None:
+    1:             type_name = self.__class__.__name__.lower()
+    1:             if readonly:
+    1:                 type_name = "readonly %s" % type_name
+    1:             name = "%s(%s, %sd, %s)" % (type_name, dtype, ndim, layout)
+   67:         super(Buffer, self).__init__(name)
+       
+    2:     @property
+    2:     def iterator_type(self):
+               from .iterators import ArrayIterator
+               return ArrayIterator(self)
+       
+    2:     @property
+    2:     def as_array(self):
+   75:         return self
+       
+    1:     def copy(self, dtype=None, ndim=None, layout=None):
+               if dtype is None:
+                   dtype = self.dtype
+               if ndim is None:
+                   ndim = self.ndim
+               if layout is None:
+                   layout = self.layout
+               return self.__class__(dtype=dtype, ndim=ndim, layout=layout,
+                                     readonly=not self.mutable)
+       
+    2:     @property
+    2:     def key(self):
+    1:         return self.dtype, self.ndim, self.layout, self.mutable
+       
+    2:     @property
+    2:     def is_c_contig(self):
+               return self.layout == 'C' or (self.ndim <= 1 and self.layout in 'CF')
+       
+    2:     @property
+    2:     def is_f_contig(self):
+               return self.layout == 'F' or (self.ndim <= 1 and self.layout in 'CF')
+       
+    2:     @property
+    2:     def is_contig(self):
+               return self.layout in 'CF'

@@ -1,0 +1,130 @@
+    1: import numpy as np
+    1: from numba import jit_module
+       
+    1: jit_module(nopython = True)
+       
+    1: """
+       Unit Conversions
+       """
+       
+    2: class TimeUnits:
+       
+    2:     @staticmethod
+    2:     def convert_hour_to_min(hours):
+    7:         return hours * 60
+       
+    2:     @staticmethod
+    2:     def convert_inverse_hour_inverse_minute(inverse_hour):
+               """ 1/h to 1/min"""
+               return inverse_hour / 60
+       
+    2:     @staticmethod
+    2:     def convert_minutes_to_days(minutes):
+    3:         return minutes / 60 / 24
+           
+    2:     @staticmethod
+    2:     def calculate_time_adjustment_array(dimension):
+       
+    7:         time_adjustment_array = np.ones((dimension)).astype(float)
+       
+   14:         for i in range(dimension[-1]):
+       
+    7:             time_adjustment_array[:, i] *= UnitConversion.time.convert_hour_to_min(24*i)
+       
+    7:         return time_adjustment_array.astype(float)
+       
+    2:     @staticmethod
+    2:     def convert_days_to_minutes(days):
+               return days * 24 * 60
+       
+    2: class MetricUnits:
+       
+    2:     @staticmethod
+    2:     def base_to_milli(unit):
+               return unit * 1e3
+       
+    2:     @staticmethod
+    2:     def milli_to_base(unit):
+               return unit/1e3
+           
+    2: class InsulinUnits:
+       
+    2:     @staticmethod
+    2:     def Uhr_to_uUmin(Uhr):
+               return Uhr/ 60.0 * 1E6
+       
+    2:     @staticmethod
+    2:     def uUmin_to_Uhr(uUmin):
+               return uUmin* 60.0 / 1E6
+       
+    2:     @staticmethod
+    2:     def Uhr_to_mUmin(Uhr):
+    1:         return Uhr*1000/60
+       
+    2:     @staticmethod
+    2:     def mUmin_to_Uhr(mUmin):
+               return mUmin/1000*60
+       
+    2:     @staticmethod
+    2:     def U_to_mU(U):
+    1:         return U*1000
+       
+    2:     @staticmethod
+    2:     def U_to_uU(U):
+               return U * 1e6
+           
+       
+    2: class GlucoseUnits:
+       
+    2:     @staticmethod
+    2:     def g_glucose_to_mol(g_glucose):
+               return (g_glucose / 180.156)
+       
+    2:     @staticmethod
+    2:     def g_glucose_to_mmol(g_glucose):
+    2:         return (g_glucose / 180.156) * 1000
+       
+    2:     @staticmethod
+    2:     def mmol_glucose_to_g(mmol_glucose):
+               return (mmol_glucose / 1000) * 180.156
+       
+    2:     @staticmethod
+    2:     def concentration_mmolL_to_mgdL(mmolL):
+    2:         return mmolL*18
+       
+    2:     @staticmethod
+    2:     def concentration_mgdl_to_mmolL(mgdL):
+               return mgdL/18
+       
+    2:     @staticmethod
+    2:     def energy_g_glucose_to_kkcal(g):
+               return g*4
+       
+    2:     @staticmethod
+    2:     def energy_kkcal_to_g_glucose_equiv(kcal):
+               return kcal/4
+       
+       
+    2: class UnitConversion:
+       
+    1:     time = TimeUnits()
+       
+    1:     metric = MetricUnits()
+       
+    1:     insulin = InsulinUnits()
+       
+    1:     glucose = GlucoseUnits()
+       
+       
+    1: """
+       Units
+       """
+       
+    1: GLUCOSE_KCAL_PER_GRAM = 4 # kcal/g
+       
+    1: """
+       Constants
+       """
+       
+       # Define random seed
+    1: DEFAULT_RANDOM_SEED = 402

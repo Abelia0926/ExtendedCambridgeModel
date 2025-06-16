@@ -1,0 +1,120 @@
+    1: """
+       Implement a rewrite pass on a LLVM module to remove unnecessary 
+       refcount operations.
+       """
+       
+    1: from llvmlite.ir.transforms import CallVisitor
+       
+    1: from numba.core import types
+       
+       
+    2: class _MarkNrtCallVisitor(CallVisitor):
+    1:     """
+           A pass to mark all NRT_incref and NRT_decref.
+           """
+    1:     def __init__(self):
+   16:         self.marked = set()
+       
+    1:     def visit_Call(self, instr):
+   18:         if getattr(instr.callee, 'name', '') in _accepted_nrtfns:
+    2:             self.marked.add(instr)
+       
+       
+    1: def _rewrite_function(function):
+           # Mark NRT usage
+   16:     markpass = _MarkNrtCallVisitor()
+   16:     markpass.visit_Function(function)
+           # Remove NRT usage
+  204:     for bb in function.basic_blocks:
+ 1681:         for inst in list(bb.instructions):
+ 1493:             if inst in markpass.marked:
+    2:                 bb.instructions.remove(inst)
+       
+       
+    1: _accepted_nrtfns = 'NRT_incref', 'NRT_decref'
+       
+       
+    1: def _legalize(module, dmm, fndesc):
+           """
+           Legalize the code in the module.
+           Returns True if the module is legal for the rewrite pass that removes
+           unnecessary refcounts.
+           """
+       
+   24:     def valid_output(ty):
+               """
+               Valid output are any type that does not need refcount
+               """
+  177:         model = dmm[ty]
+  177:         return not model.contains_nrt_meminfo()
+       
+   24:     def valid_input(ty):
+               """
+               Valid input are any type that does not need refcount except Array.
+               """
+   55:         return valid_output(ty) or isinstance(ty, types.Array)
+       
+       
+           # Ensure no reference to function marked as
+           # "numba_args_may_always_need_nrt"
+   24:     try:
+   24:         nmd = module.get_named_metadata("numba_args_may_always_need_nrt")
+   24:     except KeyError:
+               # Nothing marked
+   24:         pass
+           else:
+               # Has functions marked as "numba_args_may_always_need_nrt"
+               if len(nmd.operands) > 0:
+                   # The pass is illegal for this compilation unit.
+                   return False
+       
+           # More legalization base on function type
+   24:     argtypes = fndesc.argtypes
+   24:     restype = fndesc.restype
+   24:     calltypes = fndesc.calltypes
+       
+           # Legalize function arguments
+   79:     for argty in argtypes:
+   55:         if not valid_input(argty):
+                   return False
+       
+           # Legalize function return
+   24:     if not valid_output(restype):
+    8:         return False
+       
+           # Legalize all called functions
+  114:     for callty in calltypes.values():
+   98:         if callty is not None and not valid_output(callty.return_type):
+                   return False
+       
+           # Ensure no allocation
+   46:     for fn in module.functions:
+   30:         if fn.name.startswith("NRT_"):
+    2:             if fn.name not in _accepted_nrtfns:
+                       return False
+       
+   16:     return True
+       
+       
+    1: def remove_unnecessary_nrt_usage(function, context, fndesc):
+           """
+           Remove unnecessary NRT incref/decref in the given LLVM function.
+           It uses highlevel type info to determine if the function does not need NRT.
+           Such a function does not:
+       
+           - return array object(s);
+           - take arguments that need refcounting except array;
+           - call function(s) that return refcounted object.
+       
+           In effect, the function will not capture or create references that extend
+           the lifetime of any refcounted objects beyond the lifetime of the function.
+       
+           The rewrite is performed in place.
+           If rewrite has happened, this function returns True, otherwise, it returns False.
+           """
+   24:     dmm = context.data_model_manager
+   24:     if _legalize(function.module, dmm, fndesc):
+   16:         _rewrite_function(function)
+   16:         return True
+           else:
+    8:         return False

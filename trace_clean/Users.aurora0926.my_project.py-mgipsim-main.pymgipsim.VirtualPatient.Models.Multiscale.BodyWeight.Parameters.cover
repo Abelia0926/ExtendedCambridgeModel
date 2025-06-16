@@ -1,0 +1,56 @@
+    1: import numpy as np
+    1: from ...Parameters import BaseParameters
+    1: from pymgipsim.Utilities.Scenario import scenario
+    1: from .CONSTANTS import *
+       
+    2: class Parameters(BaseParameters):
+    1:     def __init__(self, parameters: np.ndarray = np.array([], dtype=float)):
+               if parameters.size:
+                   (self.BW0,
+                   self.beta,
+                   self.EI0,
+                   self.EE0,
+                   self.rho,
+                   self.K) = parameters.T
+       
+       
+    2:     @property
+    2:     def as_array(self):
+               parameters = [
+                           self.BW0,
+                           self.beta,
+                           self.EI0,
+                           self.EE0,
+                           self.rho,
+                           self.K
+                           ]
+               
+               self._as_array = np.asarray(parameters).T
+               return self._as_array
+       
+    2:     @as_array.setter
+    2:     def as_array(self, array: np.ndarray):
+               
+               (self.BW0,
+               self.beta,
+               self.EI0,
+               self.EE0,
+               self.rho,
+               self.K) = array
+       
+               self._as_array = np.asarray(array)
+       
+    2:     @staticmethod
+    2:     def generate(scenario_instance: scenario):
+    1:         n_subjects = scenario_instance.patient.number_of_subjects
+       
+    1:         BW0 = scenario_instance.patient.demographic_info.body_weight
+    1:         beta = np.full(n_subjects, NOMINAL_BETA)
+    1:         EI0 = np.full(n_subjects, NOMINAL_EI0)
+    1:         EE0 = np.full(n_subjects, NOMINAL_EE0)
+    1:         rho = np.full(n_subjects, NOMINAL_RHO)
+    1:         K = np.full(n_subjects, NOMINAL_K)
+       
+    1:         parameter_array = np.column_stack((BW0, beta, EI0, EE0, rho, K))
+       
+    1:         return parameter_array

@@ -1,0 +1,68 @@
+    1: from pymgipsim.Utilities.units_conversions_constants import UnitConversion
+    1: from pymgipsim.VirtualPatient.Models.Model import BaseModel
+    1: from pymgipsim.Utilities.Timestamp import Timestamp
+    1: from .Parameters import Parameters
+    1: from .States import States
+    1: from .Inputs import Inputs
+    1: import numpy as np
+    1: from .CONSTANTS import NOMINAL_tu1, NOMINAL_C
+    1: from numba import njit
+       
+       
+    2: class Model(BaseModel, UnitConversion):
+    1:     name = "Physact.Heartrate2Energyexp"
+    1:     output_state = 0
+       
+    1:     def __init__(self, sampling_time):
+    1:         self.parameters = Parameters()
+    1:         self.inputs = Inputs()
+    1:         self.states = States()
+    1:         self.initial_conditions = States()
+    1:         self.time = Timestamp()
+    1:         self.sampling_time = sampling_time
+       
+       
+    2:     @staticmethod
+    2:     @njit("float64[:,:](float64[:,:],float64,float64[:,:],float64[:,:])", cache=True)
+    2:     def model(states, time, parameters, inputs):
+               EE = states
+       
+               heart_rate, METACSM, deltaEE = inputs.T
+       
+               dotEE = (METACSM[:,None] + deltaEE[:,None] - EE) / NOMINAL_tu1
+       
+               return dotEE
+       
+    2:     @staticmethod
+    2:     def rate_equations(states, time, parameters, inputs):
+               pass
+       
+    2:     @staticmethod
+    2:     def output_equilibrium(parameters, inputs):
+               pass
+       
+    1:     def update_scenario(self, scenario):
+               pass
+       
+    1:     def preprocessing(self):
+    1:         self.initial_conditions.as_array = np.zeros((self.inputs.as_array.shape[0], 1))
+    2:         self.states.as_array = np.zeros(
+    1:             (self.inputs.as_array.shape[0], self.initial_conditions.as_array.shape[1], self.inputs.as_array.shape[2]))
+       
+    1:         heart_rate, METACSM, deltaEE = self.inputs.as_array.transpose([1,0,2])
+       
+    1:         Carr = np.asarray(NOMINAL_C)
+    1:         Cext = Carr[:, 0:2][:, :, None, None]
+    1:         X = np.stack((METACSM / 10.0, heart_rate / 100.0))[None,:,:,:]
+    1:         dinv = 1.0/np.power(np.linalg.norm(Cext-X,axis=1),2)
+    1:         weight = dinv/np.sum(dinv,axis=0)
+       
+    1:         deltaEE = np.squeeze(np.matmul(Carr[:,1][None,:],weight.transpose([1,0,2])),axis=1)
+       
+    1:         binmap = METACSM < 1.0
+    1:         deltaEE[binmap] = 0.0
+       
+    1:         self.inputs.deltaEE.sampled_signal = deltaEE
+    1:         pass
+       
+       

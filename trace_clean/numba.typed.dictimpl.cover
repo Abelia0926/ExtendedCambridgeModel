@@ -1,0 +1,43 @@
+    1: """
+       This file implements the lowering for `dict()`
+       """
+    1: from numba.core import types
+    1: from numba.core.imputils import lower_builtin
+       
+       
+    2: _message_dict_support = """
+       Unsupported use of `dict()` with keyword argument(s). \
+       The only supported uses are `dict()` or `dict(*iterable)`.
+    1: """.strip()
+       
+       
+    2: @lower_builtin(dict, types.IterableType)
+    2: def dict_constructor(context, builder, sig, args):
+           from numba.typed import Dict
+       
+           dicttype = sig.return_type
+           kt, vt = dicttype.key_type, dicttype.value_type
+       
+           def dict_impl(iterable):
+               res = Dict.empty(kt, vt)
+               for k, v in iterable:
+                   res[k] = v
+               return res
+       
+           return context.compile_internal(builder, dict_impl, sig, args)
+       
+       
+    2: @lower_builtin(dict)
+    2: def impl_dict(context, builder, sig, args):
+           """
+           The `dict()` implementation simply forwards the work to `Dict.empty()`.
+           """
+           from numba.typed import Dict
+       
+           dicttype = sig.return_type
+           kt, vt = dicttype.key_type, dicttype.value_type
+       
+           def call_ctor():
+               return Dict.empty(kt, vt)
+       
+           return context.compile_internal(builder, call_ctor, sig, args)

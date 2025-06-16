@@ -1,0 +1,270 @@
+    1: import enum
+       
+    1: import numpy as np
+       
+    1: from .abstract import Dummy, Hashable, Literal, Number, Type
+    1: from functools import total_ordering, cached_property
+    1: from numba.core import utils
+    1: from numba.core.typeconv import Conversion
+    1: from numba.np import npdatetime_helpers
+       
+       
+    2: class Boolean(Hashable):
+       
+    1:     def cast_python_value(self, value):
+               return bool(value)
+       
+       
+    1: def parse_integer_bitwidth(name):
+   84:     for prefix in ('int', 'uint'):
+   56:         if name.startswith(prefix):
+   28:             bitwidth = int(name[len(prefix):])
+   28:     return bitwidth
+       
+       
+    1: def parse_integer_signed(name):
+   28:     signed = name.startswith('int')
+   28:     return signed
+       
+       
+    3: @total_ordering
+    2: class Integer(Number):
+    1:     def __init__(self, name, bitwidth=None, signed=None):
+   87:         super(Integer, self).__init__(name)
+   87:         if bitwidth is None:
+   28:             bitwidth = parse_integer_bitwidth(name)
+   87:         if signed is None:
+   28:             signed = parse_integer_signed(name)
+   87:         self.bitwidth = bitwidth
+   87:         self.signed = signed
+       
+    2:     @classmethod
+    2:     def from_bitwidth(cls, bitwidth, signed=True):
+   20:         name = ('int%d' if signed else 'uint%d') % bitwidth
+   20:         return cls(name)
+       
+    1:     def cast_python_value(self, value):
+    8:         return getattr(np, self.name)(value)
+       
+    1:     def __lt__(self, other):
+   76:         if self.__class__ is not other.__class__:
+                   return NotImplemented
+   76:         if self.signed != other.signed:
+                   return NotImplemented
+   76:         return self.bitwidth < other.bitwidth
+       
+    2:     @property
+    2:     def maxval(self):
+               """
+               The maximum value representable by this type.
+               """
+    2:         if self.signed:
+    2:             return (1 << (self.bitwidth - 1)) - 1
+               else:
+                   return (1 << self.bitwidth) - 1
+       
+    2:     @property
+    2:     def minval(self):
+               """
+               The minimal value representable by this type.
+               """
+               if self.signed:
+                   return -(1 << (self.bitwidth - 1))
+               else:
+                   return 0
+       
+       
+    2: class IntegerLiteral(Literal, Integer):
+    1:     def __init__(self, value):
+   59:         self._literal_init(value)
+   59:         name = 'Literal[int]({})'.format(value)
+   59:         basetype = self.literal_type
+  118:         Integer.__init__(
+   59:             self,
+   59:             name=name,
+   59:             bitwidth=basetype.bitwidth,
+   59:             signed=basetype.signed,
+                   )
+       
+    1:     def can_convert_to(self, typingctx, other):
+    3:         conv = typingctx.can_convert(self.literal_type, other)
+    3:         if conv is not None:
+    3:             return max(conv, Conversion.promote)
+       
+       
+    1: Literal.ctor_map[int] = IntegerLiteral
+       
+       
+    2: class BooleanLiteral(Literal, Boolean):
+       
+    1:     def __init__(self, value):
+    7:         self._literal_init(value)
+    7:         name = 'Literal[bool]({})'.format(value)
+   14:         Boolean.__init__(
+    7:             self,
+    7:             name=name
+                   )
+       
+    1:     def can_convert_to(self, typingctx, other):
+   12:         conv = typingctx.can_convert(self.literal_type, other)
+   12:         if conv is not None:
+    6:             return max(conv, Conversion.promote)
+       
+       
+    1: Literal.ctor_map[bool] = BooleanLiteral
+       
+       
+    3: @total_ordering
+    2: class Float(Number):
+    1:     def __init__(self, *args, **kws):
+    3:         super(Float, self).__init__(*args, **kws)
+               # Determine bitwidth
+    3:         assert self.name.startswith('float')
+    3:         bitwidth = int(self.name[5:])
+    3:         self.bitwidth = bitwidth
+       
+    1:     def cast_python_value(self, value):
+               return getattr(np, self.name)(value)
+       
+    1:     def __lt__(self, other):
+   14:         if self.__class__ is not other.__class__:
+                   return NotImplemented
+   14:         return self.bitwidth < other.bitwidth
+       
+       
+    3: @total_ordering
+    2: class Complex(Number):
+    1:     def __init__(self, name, underlying_float, **kwargs):
+    2:         super(Complex, self).__init__(name, **kwargs)
+    2:         self.underlying_float = underlying_float
+               # Determine bitwidth
+    2:         assert self.name.startswith('complex')
+    2:         bitwidth = int(self.name[7:])
+    2:         self.bitwidth = bitwidth
+       
+    1:     def cast_python_value(self, value):
+               return getattr(np, self.name)(value)
+       
+    1:     def __lt__(self, other):
+   13:         if self.__class__ is not other.__class__:
+                   return NotImplemented
+   13:         return self.bitwidth < other.bitwidth
+       
+       
+    2: class _NPDatetimeBase(Type):
+    1:     """
+           Common base class for np.datetime64 and np.timedelta64.
+           """
+       
+    1:     def __init__(self, unit, *args, **kws):
+               name = '%s[%s]' % (self.type_name, unit)
+               self.unit = unit
+               self.unit_code = npdatetime_helpers.DATETIME_UNITS[self.unit]
+               super(_NPDatetimeBase, self).__init__(name, *args, **kws)
+       
+    1:     def __lt__(self, other):
+               if self.__class__ is not other.__class__:
+                   return NotImplemented
+               # A coarser-grained unit is "smaller", i.e. less precise values
+               # can be represented (but the magnitude of representable values is
+               # also greater...).
+               return self.unit_code < other.unit_code
+       
+    1:     def cast_python_value(self, value):
+               cls = getattr(np, self.type_name)
+               if self.unit:
+                   return cls(value, self.unit)
+               else:
+                   return cls(value)
+       
+       
+    3: @total_ordering
+    2: class NPTimedelta(_NPDatetimeBase):
+    1:     type_name = 'timedelta64'
+       
+    3: @total_ordering
+    2: class NPDatetime(_NPDatetimeBase):
+    1:     type_name = 'datetime64'
+       
+       
+    2: class EnumClass(Dummy):
+    1:     """
+           Type class for Enum classes.
+           """
+    1:     basename = "Enum class"
+       
+    1:     def __init__(self, cls, dtype):
+               assert isinstance(cls, type)
+               assert isinstance(dtype, Type)
+               self.instance_class = cls
+               self.dtype = dtype
+               name = "%s<%s>(%s)" % (self.basename, self.dtype, self.instance_class.__name__)
+               super(EnumClass, self).__init__(name)
+       
+    2:     @property
+    2:     def key(self):
+               return self.instance_class, self.dtype
+       
+    2:     @cached_property
+    2:     def member_type(self):
+               """
+               The type of this class' members.
+               """
+               return EnumMember(self.instance_class, self.dtype)
+       
+       
+    2: class IntEnumClass(EnumClass):
+    1:     """
+           Type class for IntEnum classes.
+           """
+    1:     basename = "IntEnum class"
+       
+    2:     @cached_property
+    2:     def member_type(self):
+               """
+               The type of this class' members.
+               """
+               return IntEnumMember(self.instance_class, self.dtype)
+       
+       
+    2: class EnumMember(Type):
+    1:     """
+           Type class for Enum members.
+           """
+    1:     basename = "Enum"
+    1:     class_type_class = EnumClass
+       
+    1:     def __init__(self, cls, dtype):
+               assert isinstance(cls, type)
+               assert isinstance(dtype, Type)
+               self.instance_class = cls
+               self.dtype = dtype
+               name = "%s<%s>(%s)" % (self.basename, self.dtype, self.instance_class.__name__)
+               super(EnumMember, self).__init__(name)
+       
+    2:     @property
+    2:     def key(self):
+               return self.instance_class, self.dtype
+       
+    2:     @property
+    2:     def class_type(self):
+               """
+               The type of this member's class.
+               """
+               return self.class_type_class(self.instance_class, self.dtype)
+       
+       
+    2: class IntEnumMember(EnumMember):
+    1:     """
+           Type class for IntEnum members.
+           """
+    1:     basename = "IntEnum"
+    1:     class_type_class = IntEnumClass
+       
+    1:     def can_convert_to(self, typingctx, other):
+               """
+               Convert IntEnum members to plain integers.
+               """
+               if issubclass(self.instance_class, enum.IntEnum):
+                   conv = typingctx.can_convert(self.dtype, other)
+                   return max(conv, Conversion.safe)

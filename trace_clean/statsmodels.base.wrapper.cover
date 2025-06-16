@@ -1,0 +1,132 @@
+    1: import functools
+    1: import inspect
+    1: from textwrap import dedent
+       
+       
+    2: class ResultsWrapper:
+    1:     """
+           Class which wraps a statsmodels estimation Results class and steps in to
+           reattach metadata to results (if available)
+           """
+    1:     _wrap_attrs = {}
+    1:     _wrap_methods = {}
+       
+    1:     def __init__(self, results):
+               self._results = results
+               self.__doc__ = results.__doc__
+       
+    1:     def __dir__(self):
+               return [x for x in dir(self._results)]
+       
+    1:     def __getattribute__(self, attr):
+               get = lambda name: object.__getattribute__(self, name)
+       
+               try:
+                   results = get('_results')
+               except AttributeError:
+                   pass
+       
+               try:
+                   return get(attr)
+               except AttributeError:
+                   pass
+       
+               obj = getattr(results, attr)
+               data = results.model.data
+               how = self._wrap_attrs.get(attr)
+               if how and isinstance(how, tuple):
+                   obj = data.wrap_output(obj, how[0], *how[1:])
+               elif how:
+                   obj = data.wrap_output(obj, how=how)
+       
+               return obj
+       
+    1:     def __getstate__(self):
+               # print 'pickling wrapper', self.__dict__
+               return self.__dict__
+       
+    1:     def __setstate__(self, dict_):
+               # print 'unpickling wrapper', dict_
+               self.__dict__.update(dict_)
+       
+    1:     def save(self, fname, remove_data=False):
+               """
+               Save a pickle of this instance.
+       
+               Parameters
+               ----------
+               fname : {str, handle}
+                   Either a filename or a valid file handle.
+               remove_data : bool
+                   If False (default), then the instance is pickled without changes.
+                   If True, then all arrays with length nobs are set to None before
+                   pickling. See the remove_data method.
+                   In some cases not all arrays will be set to None.
+               """
+               from statsmodels.iolib.smpickle import save_pickle
+       
+               if remove_data:
+                   self.remove_data()
+       
+               save_pickle(self, fname)
+       
+    2:     @classmethod
+    2:     def load(cls, fname):
+               """
+               Load a pickled results instance
+       
+               .. warning::
+       
+                  Loading pickled models is not secure against erroneous or
+                  maliciously constructed data. Never unpickle data received from
+                  an untrusted or unauthenticated source.
+       
+               Parameters
+               ----------
+               fname : {str, handle}
+                   A string filename or a file handle.
+       
+               Returns
+               -------
+               Results
+                   The unpickled results instance.
+               """
+               from statsmodels.iolib.smpickle import load_pickle
+               return load_pickle(fname)
+       
+       
+    1: def union_dicts(*dicts):
+    2:     result = {}
+    6:     for d in dicts:
+    4:         result.update(d)
+    2:     return result
+       
+       
+    1: def make_wrapper(func, how):
+    8:     @functools.wraps(func)
+    8:     def wrapper(self, *args, **kwargs):
+               results = object.__getattribute__(self, '_results')
+               data = results.model.data
+               if how and isinstance(how, tuple):
+                   obj = data.wrap_output(func(results, *args, **kwargs), how[0], how[1:])
+               elif how:
+                   obj = data.wrap_output(func(results, *args, **kwargs), how)
+               return obj
+       
+    4:     sig = inspect.signature(func)
+    4:     formatted = str(sig)
+       
+    4:     doc = dedent(wrapper.__doc__) if wrapper.__doc__ else ''
+    4:     wrapper.__doc__ = "\n%s%s\n%s" % (func.__name__, formatted, doc)
+       
+    4:     return wrapper
+       
+       
+    1: def populate_wrapper(klass, wrapping):
+    6:     for meth, how in klass._wrap_methods.items():
+    4:         if not hasattr(wrapping, meth):
+                   continue
+       
+    4:         func = getattr(wrapping, meth)
+    4:         wrapper = make_wrapper(func, how)
+    4:         setattr(klass, meth, wrapper)

@@ -1,0 +1,18 @@
+    1: from . import _base
+    1: from ._axes import Axes
+       
+       # Backcompat.
+    1: Subplot = Axes
+       
+       
+    2: class _SubplotBaseMeta(type):
+    1:     def __instancecheck__(self, obj):
+               return (isinstance(obj, _base._AxesBase)
+                       and obj.get_subplotspec() is not None)
+       
+       
+    2: class SubplotBase(metaclass=_SubplotBaseMeta):
+    1:     pass
+       
+       
+    1: def subplot_class_factory(cls): return cls

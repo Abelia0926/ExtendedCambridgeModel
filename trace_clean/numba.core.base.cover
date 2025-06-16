@@ -1,0 +1,1255 @@
+    1: from collections import defaultdict
+    1: import copy
+    1: import sys
+    1: from itertools import permutations, takewhile
+    1: from contextlib import contextmanager
+    1: from functools import cached_property
+       
+    1: from llvmlite import ir as llvmir
+    1: from llvmlite.ir import Constant
+    1: import llvmlite.binding as ll
+       
+    1: from numba.core import types, utils, datamodel, debuginfo, funcdesc, config, cgutils, imputils
+    1: from numba.core import event, errors, targetconfig
+    1: from numba import _dynfunc, _helperlib
+    1: from numba.core.compiler_lock import global_compiler_lock
+    1: from numba.core.pythonapi import PythonAPI
+    1: from numba.core.imputils import (user_function, user_generator,
+                              builtin_registry, impl_ret_borrowed,
+                              RegistryLoader)
+    1: from numba.cpython import builtins
+       
+    1: GENERIC_POINTER = llvmir.PointerType(llvmir.IntType(8))
+    1: PYOBJECT = GENERIC_POINTER
+    1: void_ptr = GENERIC_POINTER
+       
+       
+    2: class OverloadSelector(object):
+    1:     """
+           An object matching an actual signature against a registry of formal
+           signatures and choosing the best candidate, if any.
+       
+           In the current implementation:
+           - a "signature" is a tuple of type classes or type instances
+           - the "best candidate" is the most specific match
+           """
+       
+    1:     def __init__(self):
+               # A list of (formal args tuple, value)
+  560:         self.versions = []
+  560:         self._cache = {}
+       
+    1:     def find(self, sig):
+  816:         out = self._cache.get(sig)
+  816:         if out is None:
+  272:             out = self._find(sig)
+  132:             self._cache[sig] = out
+  676:         return out
+       
+    1:     def _find(self, sig):
+  272:         candidates = self._select_compatible(sig)
+  272:         if candidates:
+  132:             return candidates[self._best_signature(candidates)]
+               else:
+  140:             raise errors.NumbaNotImplementedError(f'{self}, {sig}')
+       
+    1:     def _select_compatible(self, sig):
+               """
+               Select all compatible signatures and their implementation.
+               """
+  272:         out = {}
+ 2137:         for ver_sig, impl in self.versions:
+ 1865:             if self._match_arglist(ver_sig, sig):
+  141:                 out[ver_sig] = impl
+  272:         return out
+       
+    1:     def _best_signature(self, candidates):
+               """
+               Returns the best signature out of the candidates
+               """
+  132:         ordered, genericity = self._sort_signatures(candidates)
+               # check for ambiguous signatures
+  132:         if len(ordered) > 1:
+    8:             firstscore = genericity[ordered[0]]
+   32:             same = list(takewhile(lambda x: genericity[x] == firstscore,
+    8:                                   ordered))
+    8:             if len(same) > 1:
+                       msg = ["{n} ambiguous signatures".format(n=len(same))]
+                       for sig in same:
+                           msg += ["{0} => {1}".format(sig, candidates[sig])]
+                       raise errors.NumbaTypeError('\n'.join(msg))
+  132:         return ordered[0]
+       
+    1:     def _sort_signatures(self, candidates):
+               """
+               Sort signatures in ascending level of genericity.
+       
+               Returns a 2-tuple:
+       
+                   * ordered list of signatures
+                   * dictionary containing genericity scores
+               """
+               # score by genericity
+  132:         genericity = defaultdict(int)
+  152:         for this, other in permutations(candidates.keys(), r=2):
+   20:             matched = self._match_arglist(formal_args=this, actual_args=other)
+   20:             if matched:
+                       # genericity score +1 for every another compatible signature
+    9:                 genericity[this] += 1
+               # order candidates in ascending level of genericity
+  273:         ordered = sorted(candidates.keys(), key=lambda x: genericity[x])
+  132:         return ordered, genericity
+       
+    1:     def _match_arglist(self, formal_args, actual_args):
+               """
+               Returns True if the signature is "matching".
+               A formal signature is "matching" if the actual signature matches exactly
+               or if the formal signature is a compatible generic signature.
+               """
+               # normalize VarArg
+ 1885:         if formal_args and isinstance(formal_args[-1], types.VarArg):
+    5:             ndiff = len(actual_args) - len(formal_args) + 1
+    5:             formal_args = formal_args[:-1] + (formal_args[-1].dtype,) * ndiff
+       
+ 1885:         if len(formal_args) != len(actual_args):
+   13:             return False
+       
+ 2236:         for formal, actual in zip(formal_args, actual_args):
+ 2086:             if not self._match(formal, actual):
+ 1722:                 return False
+       
+  150:         return True
+       
+    1:     def _match(self, formal, actual):
+ 2086:         if formal == actual:
+                   # formal argument matches actual arguments
+   56:             return True
+ 2030:         elif types.Any == formal:
+                   # formal argument is any
+   87:             return True
+ 1943:         elif isinstance(formal, type) and issubclass(formal, types.Type):
+ 1833:             if isinstance(actual, type) and issubclass(actual, formal):
+                       # formal arg is a type class and actual arg is a subclass
+    9:                 return True
+ 1824:             elif isinstance(actual, formal):
+                       # formal arg is a type class of which actual arg is an instance
+  212:                 return True
+       
+    1:     def append(self, value, sig):
+               """
+               Add a formal signature and its associated value.
+               """
+ 1206:         assert isinstance(sig, tuple), (value, sig)
+ 1206:         self.versions.append((sig, value))
+ 1206:         self._cache.clear()
+       
+       
+    2: @utils.runonce
+    2: def _load_global_helpers():
+           """
+           Execute once to install special symbols into the LLVM symbol table.
+           """
+           # This is Py_None's real C name
+    1:     ll.add_symbol("_Py_NoneStruct", id(None))
+       
+           # Add Numba C helper functions
+    3:     for c_helpers in (_helperlib.c_helpers, _dynfunc.c_helpers):
+  161:         for py_name, c_address in c_helpers.items():
+  159:             c_name = "numba_" + py_name
+  159:             ll.add_symbol(c_name, c_address)
+       
+           # Add all built-in exception classes
+  158:     for obj in utils.builtins.__dict__.values():
+  157:         if isinstance(obj, type) and issubclass(obj, BaseException):
+   69:             ll.add_symbol("PyExc_%s" % (obj.__name__), id(obj))
+       
+       
+    2: class BaseContext(object):
+    1:     """
+       
+           Notes on Structure
+           ------------------
+       
+           Most objects are lowered as plain-old-data structure in the generated
+           llvm.  They are passed around by reference (a pointer to the structure).
+           Only POD structure can live across function boundaries by copying the
+           data.
+           """
+           # True if the target requires strict alignment
+           # Causes exception to be raised if the record members are not aligned.
+    1:     strict_alignment = False
+       
+           # Force powi implementation as math.pow call
+    1:     implement_powi_as_math_call = False
+    1:     implement_pow_as_math_call = False
+       
+           # Emit Debug info
+    1:     enable_debuginfo = False
+    1:     DIBuilder = debuginfo.DIBuilder
+       
+           # Bound checking
+    2:     @property
+    2:     def enable_boundscheck(self):
+   20:         if config.BOUNDSCHECK is not None:
+                   return config.BOUNDSCHECK
+   20:         return self._boundscheck
+       
+    2:     @enable_boundscheck.setter
+    2:     def enable_boundscheck(self, value):
+               self._boundscheck = value
+       
+           # NRT
+    1:     enable_nrt = False
+       
+           # Auto parallelization
+    1:     auto_parallel = False
+       
+           # PYCC
+    1:     aot_mode = False
+       
+           # Error model for various operations (only FP exceptions currently)
+    1:     error_model = None
+       
+           # Whether dynamic globals (CPU runtime addresses) is allowed
+    1:     allow_dynamic_globals = False
+       
+           # Fast math flags
+    1:     fastmath = False
+       
+           # python execution environment
+    1:     environment = None
+       
+           # the function descriptor
+    1:     fndesc = None
+       
+    1:     def __init__(self, typing_context, target):
+    1:         _load_global_helpers()
+       
+    1:         self.address_size = utils.MACHINE_BITS
+    1:         self.typing_context = typing_context
+    1:         from numba.core.target_extension import target_registry
+    1:         self.target_name = target
+    1:         self.target = target_registry[target]
+       
+               # A mapping of installed registries to their loaders
+    1:         self._registries = {}
+               # Declarations loaded from registries and other sources
+    1:         self._defns = defaultdict(OverloadSelector)
+    1:         self._getattrs = defaultdict(OverloadSelector)
+    1:         self._setattrs = defaultdict(OverloadSelector)
+    1:         self._casts = OverloadSelector()
+    1:         self._get_constants = OverloadSelector()
+               # Other declarations
+    1:         self._generators = {}
+    1:         self.special_ops = {}
+    1:         self.cached_internal_func = {}
+    1:         self._pid = None
+    1:         self._codelib_stack = []
+       
+    1:         self._boundscheck = False
+       
+    1:         self.data_model_manager = datamodel.default_manager
+       
+               # Initialize
+    1:         self.init()
+       
+    1:     def init(self):
+               """
+               For subclasses to add initializer
+               """
+       
+    1:     def refresh(self):
+               """
+               Refresh context with new declarations from known registries.
+               Useful for third-party extensions.
+               """
+               # load target specific registries
+  356:         self.load_additional_registries()
+       
+               # Populate the builtin registry, this has to happen after loading
+               # additional registries as some of the "additional" registries write
+               # their implementations into the builtin_registry and would be missed if
+               # this ran first.
+  356:         self.install_registry(builtin_registry)
+       
+               # Also refresh typing context, since @overload declarations can
+               # affect it.
+  356:         self.typing_context.refresh()
+       
+    1:     def load_additional_registries(self):
+               """
+               Load target-specific registries.  Can be overridden by subclasses.
+               """
+       
+    1:     def mangler(self, name, types, *, abi_tags=(), uid=None):
+               """
+               Perform name mangling.
+               """
+   48:         return funcdesc.default_mangler(name, types, abi_tags=abi_tags, uid=uid)
+       
+    1:     def get_env_name(self, fndesc):
+               """Get the environment name given a FunctionDescriptor.
+       
+               Use this instead of the ``fndesc.env_name`` so that the target-context
+               can provide necessary mangling of the symbol to meet ABI requirements.
+               """
+   46:         return fndesc.env_name
+       
+    1:     def declare_env_global(self, module, envname):
+               """Declare the Environment pointer as a global of the module.
+       
+               The pointer is initialized to NULL.  It must be filled by the runtime
+               with the actual address of the Env before the associated function
+               can be executed.
+       
+               Parameters
+               ----------
+               module :
+                   The LLVM Module
+               envname : str
+                   The name of the global variable.
+               """
+   26:         if envname not in module.globals:
+   26:             gv = llvmir.GlobalVariable(module, cgutils.voidptr_t, name=envname)
+   26:             gv.linkage = 'common'
+   26:             gv.initializer = cgutils.get_null_value(gv.type.pointee)
+       
+   26:         return module.globals[envname]
+       
+    1:     def get_arg_packer(self, fe_args):
+  216:         return datamodel.ArgPacker(self.data_model_manager, fe_args)
+       
+    1:     def get_data_packer(self, fe_types):
+               return datamodel.DataPacker(self.data_model_manager, fe_types)
+       
+    2:     @property
+    2:     def target_data(self):
+               raise NotImplementedError
+       
+    2:     @cached_property
+    2:     def nonconst_module_attrs(self):
+               """
+               All module attrs are constant for targets using BaseContext.
+               """
+    8:         return tuple()
+       
+    2:     @cached_property
+    2:     def nrt(self):
+   17:         from numba.core.runtime.context import NRTContext
+   17:         return NRTContext(self, self.enable_nrt)
+       
+    1:     def subtarget(self, **kws):
+   48:         obj = copy.copy(self)  # shallow copy
+  168:         for k, v in kws.items():
+  120:             if not hasattr(obj, k):
+                       raise NameError("unknown option {0!r}".format(k))
+  120:             setattr(obj, k, v)
+   48:         if obj.codegen() is not self.codegen():
+                   # We can't share functions across different codegens
+                   obj.cached_internal_func = {}
+   48:         return obj
+       
+    1:     def install_registry(self, registry):
+               """
+               Install a *registry* (a imputils.Registry instance) of function
+               and attribute implementations.
+               """
+ 2848:         try:
+ 2848:             loader = self._registries[registry]
+    8:         except KeyError:
+    8:             loader = RegistryLoader(registry)
+    8:             self._registries[registry] = loader
+ 2848:         self.insert_func_defn(loader.new_registrations('functions'))
+ 2848:         self._insert_getattr_defn(loader.new_registrations('getattrs'))
+ 2848:         self._insert_setattr_defn(loader.new_registrations('setattrs'))
+ 2848:         self._insert_cast_defn(loader.new_registrations('casts'))
+ 2848:         self._insert_get_constant_defn(loader.new_registrations('constants'))
+       
+    1:     def insert_func_defn(self, defns):
+ 3890:         for impl, func, sig in defns:
+ 1042:             self._defns[func].append(impl, sig)
+       
+    1:     def _insert_getattr_defn(self, defns):
+ 2914:         for impl, attr, sig in defns:
+   66:             self._getattrs[attr].append(impl, sig)
+       
+    1:     def _insert_setattr_defn(self, defns):
+ 2851:         for impl, attr, sig in defns:
+    3:             self._setattrs[attr].append(impl, sig)
+       
+    1:     def _insert_cast_defn(self, defns):
+ 2902:         for impl, sig in defns:
+   54:             self._casts.append(impl, sig)
+       
+    1:     def _insert_get_constant_defn(self, defns):
+ 2869:         for impl, sig in defns:
+   21:             self._get_constants.append(impl, sig)
+       
+    1:     def insert_user_function(self, func, fndesc, libs=()):
+   20:         impl = user_function(fndesc, libs)
+   20:         self._defns[func].append(impl, impl.signature)
+       
+    1:     def insert_generator(self, genty, gendesc, libs=()):
+               assert isinstance(genty, types.Generator)
+               impl = user_generator(gendesc, libs)
+               self._generators[genty] = gendesc, impl
+       
+    1:     def remove_user_function(self, func):
+               """
+               Remove user function *func*.
+               KeyError is raised if the function isn't known to us.
+               """
+               del self._defns[func]
+       
+    1:     def get_external_function_type(self, fndesc):
+               argtypes = [self.get_argument_type(aty)
+                           for aty in fndesc.argtypes]
+               # don't wrap in pointer
+               restype = self.get_argument_type(fndesc.restype)
+               fnty = llvmir.FunctionType(restype, argtypes)
+               return fnty
+       
+    1:     def declare_function(self, module, fndesc):
+   63:         fnty = self.call_conv.get_function_type(fndesc.restype, fndesc.argtypes)
+   63:         fn = cgutils.get_or_insert_function(module, fnty, fndesc.mangled_name)
+   63:         self.call_conv.decorate_function(fn, fndesc.args, fndesc.argtypes, noalias=fndesc.noalias)
+   63:         if fndesc.inline:
+                   fn.attributes.add('alwaysinline')
+                   # alwaysinline overrides optnone
+                   fn.attributes.discard('noinline')
+                   fn.attributes.discard('optnone')
+   63:         return fn
+       
+    1:     def declare_external_function(self, module, fndesc):
+               fnty = self.get_external_function_type(fndesc)
+               fn = cgutils.get_or_insert_function(module, fnty, fndesc.mangled_name)
+               assert fn.is_declaration
+               for ak, av in zip(fndesc.args, fn.args):
+                   av.name = "arg.%s" % ak
+               return fn
+       
+    1:     def insert_const_string(self, mod, string):
+               """
+               Insert constant *string* (a str object) into module *mod*.
+               """
+   51:         stringtype = GENERIC_POINTER
+   51:         name = ".const.%s" % string
+   51:         text = cgutils.make_bytearray(string.encode("utf-8") + b"\x00")
+   51:         gv = self.insert_unique_const(mod, name, text)
+   51:         return Constant.bitcast(gv, stringtype)
+       
+    1:     def insert_const_bytes(self, mod, bytes, name=None):
+               """
+               Insert constant *byte* (a `bytes` object) into module *mod*.
+               """
+               stringtype = GENERIC_POINTER
+               name = ".bytes.%s" % (name or hash(bytes))
+               text = cgutils.make_bytearray(bytes)
+               gv = self.insert_unique_const(mod, name, text)
+               return Constant.bitcast(gv, stringtype)
+       
+    1:     def insert_unique_const(self, mod, name, val):
+               """
+               Insert a unique internal constant named *name*, with LLVM value
+               *val*, into module *mod*.
+               """
+  129:         try:
+  129:             gv = mod.get_global(name)
+  123:         except KeyError:
+  123:             return cgutils.global_constant(mod, name, val)
+               else:
+    6:             return gv
+       
+    1:     def get_argument_type(self, ty):
+   52:         return self.data_model_manager[ty].get_argument_type()
+       
+    1:     def get_return_type(self, ty):
+               return self.data_model_manager[ty].get_return_type()
+       
+    1:     def get_data_type(self, ty):
+               """
+               Get a LLVM data representation of the Numba type *ty* that is safe
+               for storage.  Record data are stored as byte array.
+       
+               The return value is a llvmlite.ir.Type object, or None if the type
+               is an opaque pointer (???).
+               """
+   37:         return self.data_model_manager[ty].get_data_type()
+       
+    1:     def get_value_type(self, ty):
+  632:         return self.data_model_manager[ty].get_value_type()
+       
+    1:     def pack_value(self, builder, ty, value, ptr, align=None):
+               """
+               Pack value into the array storage at *ptr*.
+               If *align* is given, it is the guaranteed alignment for *ptr*
+               (by default, the standard ABI alignment).
+               """
+    5:         dataval = self.data_model_manager[ty].as_data(builder, value)
+    5:         builder.store(dataval, ptr, align=align)
+       
+    1:     def unpack_value(self, builder, ty, ptr, align=None):
+               """
+               Unpack value from the array storage at *ptr*.
+               If *align* is given, it is the guaranteed alignment for *ptr*
+               (by default, the standard ABI alignment).
+               """
+   12:         dm = self.data_model_manager[ty]
+   12:         return dm.load_from_data_pointer(builder, ptr, align)
+       
+    1:     def get_constant_generic(self, builder, ty, val):
+               """
+               Return a LLVM constant representing value *val* of Numba type *ty*.
+               """
+  404:         try:
+  404:             impl = self._get_constants.find((ty,))
+  404:             return impl(self, builder, ty, val)
+               except NotImplementedError:
+                   raise NotImplementedError("Cannot lower constant of type '%s'" % (ty,))
+       
+    1:     def get_constant(self, ty, val):
+               """
+               Same as get_constant_generic(), but without specifying *builder*.
+               Works only for simple types.
+               """
+               # HACK: pass builder=None to preserve get_constant() API
+  171:         return self.get_constant_generic(None, ty, val)
+       
+    1:     def get_constant_undef(self, ty):
+   17:         lty = self.get_value_type(ty)
+   17:         return Constant(lty, llvmir.Undefined)
+       
+    1:     def get_constant_null(self, ty):
+               lty = self.get_value_type(ty)
+               return Constant(lty, None)
+       
+    1:     def get_function(self, fn, sig, _firstcall=True):
+               """
+               Return the implementation of function *fn* for signature *sig*.
+               The return value is a callable with the signature (builder, args).
+               """
+  338:         assert sig is not None
+  338:         sig = sig.as_function()
+  338:         if isinstance(fn, types.Callable):
+  181:             key = fn.get_impl_key(sig)
+  181:             overloads = self._defns[key]
+               else:
+  157:             key = fn
+  157:             overloads = self._defns[key]
+       
+  338:         try:
+  338:             return _wrap_impl(overloads.find(sig.args), self, sig)
+  138:         except errors.NumbaNotImplementedError:
+  138:             pass
+  138:         if isinstance(fn, types.Type):
+                   # It's a type instance => try to find a definition for the type class
+                   try:
+                       return self.get_function(type(fn), sig)
+                   except NotImplementedError:
+                       # Raise exception for the type instance, for a better error message
+                       pass
+       
+               # Automatically refresh the context to load new registries if we are
+               # calling the first time.
+  138:         if _firstcall:
+   69:             self.refresh()
+   69:             return self.get_function(fn, sig, _firstcall=False)
+       
+   69:         raise NotImplementedError("No definition for lowering %s%s" % (key, sig))
+       
+    1:     def get_generator_desc(self, genty):
+               """
+               """
+               return self._generators[genty][0]
+       
+    1:     def get_generator_impl(self, genty):
+               """
+               """
+               res = self._generators[genty][1]
+               self.add_linking_libs(getattr(res, 'libs', ()))
+               return res
+       
+    1:     def get_bound_function(self, builder, obj, ty):
+    2:         assert self.get_value_type(ty) == obj.type
+    2:         return obj
+       
+    1:     def get_getattr(self, typ, attr):
+               """
+               Get the getattr() implementation for the given type and attribute name.
+               The return value is a callable with the signature
+               (context, builder, typ, val, attr).
+               """
+   48:         const_attr = (typ, attr) not in self.nonconst_module_attrs
+   48:         is_module = isinstance(typ, types.Module)
+   48:         if is_module and const_attr:
+                   # Implement getattr for module-level globals that we treat as
+                   # constants.
+                   # XXX We shouldn't have to retype this
+   33:             attrty = self.typing_context.resolve_module_constants(typ, attr)
+   33:             if attrty is None or isinstance(attrty, types.Dummy):
+                       # No implementation required for dummies (functions, modules...),
+                       # which are dealt with later
+   31:                 return None
+                   else:
+    2:                 pyval = getattr(typ.pymod, attr)
+    2:                 def imp(context, builder, typ, val, attr):
+    2:                     llval = self.get_constant_generic(builder, attrty, pyval)
+    2:                     return impl_ret_borrowed(context, builder, attrty, llval)
+    2:                 return imp
+       
+               # Lookup specific getattr implementation for this type and attribute
+   15:         overloads = self._getattrs[attr]
+   15:         try:
+   15:             return overloads.find((typ,))
+    2:         except errors.NumbaNotImplementedError:
+    2:             pass
+               # Lookup generic getattr implementation for this type
+    2:         overloads = self._getattrs[None]
+    2:         try:
+    2:             return overloads.find((typ,))
+               except errors.NumbaNotImplementedError:
+                   pass
+       
+               raise NotImplementedError("No definition for lowering %s.%s" % (typ, attr))
+       
+    1:     def get_setattr(self, attr, sig):
+               """
+               Get the setattr() implementation for the given attribute name
+               and signature.
+               The return value is a callable with the signature (builder, args).
+               """
+               assert len(sig.args) == 2
+               typ = sig.args[0]
+               valty = sig.args[1]
+       
+               def wrap_setattr(impl):
+                   def wrapped(builder, args):
+                       return impl(self, builder, sig, args, attr)
+                   return wrapped
+       
+               # Lookup specific setattr implementation for this type and attribute
+               overloads = self._setattrs[attr]
+               try:
+                   return wrap_setattr(overloads.find((typ, valty)))
+               except errors.NumbaNotImplementedError:
+                   pass
+               # Lookup generic setattr implementation for this type
+               overloads = self._setattrs[None]
+               try:
+                   return wrap_setattr(overloads.find((typ, valty)))
+               except errors.NumbaNotImplementedError:
+                   pass
+       
+               raise NotImplementedError("No definition for lowering %s.%s = %s"
+                                         % (typ, attr, valty))
+       
+    1:     def get_argument_value(self, builder, ty, val):
+               """
+               Argument representation to local value representation
+               """
+               return self.data_model_manager[ty].from_argument(builder, val)
+       
+    1:     def get_returned_value(self, builder, ty, val):
+               """
+               Return value representation to local value representation
+               """
+   52:         return self.data_model_manager[ty].from_return(builder, val)
+       
+    1:     def get_return_value(self, builder, ty, val):
+               """
+               Local value representation to return type representation
+               """
+   34:         return self.data_model_manager[ty].as_return(builder, val)
+       
+    1:     def get_value_as_argument(self, builder, ty, val):
+               """Prepare local value representation as argument type representation
+               """
+               return self.data_model_manager[ty].as_argument(builder, val)
+       
+    1:     def get_value_as_data(self, builder, ty, val):
+    4:         return self.data_model_manager[ty].as_data(builder, val)
+       
+    1:     def get_data_as_value(self, builder, ty, val):
+               return self.data_model_manager[ty].from_data(builder, val)
+       
+    1:     def pair_first(self, builder, val, ty):
+               """
+               Extract the first element of a heterogeneous pair.
+               """
+    5:         pair = self.make_helper(builder, ty, val)
+    5:         return pair.first
+       
+    1:     def pair_second(self, builder, val, ty):
+               """
+               Extract the second element of a heterogeneous pair.
+               """
+    5:         pair = self.make_helper(builder, ty, val)
+    5:         return pair.second
+       
+    1:     def cast(self, builder, val, fromty, toty):
+               """
+               Cast a value of type *fromty* to type *toty*.
+               This implements implicit conversions as can happen due to the
+               granularity of the Numba type system, or lax Python semantics.
+               """
+  850:         if fromty is types._undef_var:
+                   # Special case for undefined variable
+                   return self.get_constant_null(toty)
+  850:         elif fromty == toty or toty == types.Any:
+  793:             return val
+   57:         try:
+   57:             impl = self._casts.find((fromty, toty))
+   57:             return impl(self, builder, fromty, toty, val)
+               except errors.NumbaNotImplementedError:
+                   raise errors.NumbaNotImplementedError(
+                       "Cannot cast %s to %s: %s" % (fromty, toty, val))
+       
+    1:     def generic_compare(self, builder, key, argtypes, args):
+               """
+               Compare the given LLVM values of the given Numba types using
+               the comparison *key* (e.g. '==').  The values are first cast to
+               a common safe conversion type.
+               """
+               at, bt = argtypes
+               av, bv = args
+               ty = self.typing_context.unify_types(at, bt)
+               assert ty is not None
+               cav = self.cast(builder, av, at, ty)
+               cbv = self.cast(builder, bv, bt, ty)
+               fnty = self.typing_context.resolve_value_type(key)
+               # the sig is homogeneous in the unified casted type
+               cmpsig = fnty.get_call_type(self.typing_context, (ty, ty), {})
+               cmpfunc = self.get_function(fnty, cmpsig)
+               self.add_linking_libs(getattr(cmpfunc, 'libs', ()))
+               return cmpfunc(builder, (cav, cbv))
+       
+    1:     def make_optional_none(self, builder, valtype):
+               optval = self.make_helper(builder, types.Optional(valtype))
+               optval.valid = cgutils.false_bit
+               return optval._getvalue()
+       
+    1:     def make_optional_value(self, builder, valtype, value):
+               optval = self.make_helper(builder, types.Optional(valtype))
+               optval.valid = cgutils.true_bit
+               optval.data = value
+               return optval._getvalue()
+       
+    1:     def is_true(self, builder, typ, val):
+               """
+               Return the truth value of a value of the given Numba type.
+               """
+    7:         fnty = self.typing_context.resolve_value_type(bool)
+    7:         sig = fnty.get_call_type(self.typing_context, (typ,), {})
+    7:         impl = self.get_function(fnty, sig)
+    7:         return impl(builder, (val,))
+       
+    1:     def get_c_value(self, builder, typ, name, dllimport=False):
+               """
+               Get a global value through its C-accessible *name*, with the given
+               LLVM type.
+               If *dllimport* is true, the symbol will be marked as imported
+               from a DLL (necessary for AOT compilation under Windows).
+               """
+   53:         module = builder.function.module
+   53:         try:
+   53:             gv = module.globals[name]
+   43:         except KeyError:
+   43:             gv = cgutils.add_global_variable(module, typ, name)
+   43:             if dllimport and self.aot_mode and sys.platform == 'win32':
+                       gv.storage_class = "dllimport"
+   53:         return gv
+       
+    1:     def call_external_function(self, builder, callee, argtys, args):
+               args = [self.get_value_as_argument(builder, ty, arg)
+                       for ty, arg in zip(argtys, args)]
+               retval = builder.call(callee, args)
+               return retval
+       
+    1:     def get_function_pointer_type(self, typ):
+               return self.data_model_manager[typ].get_data_type()
+       
+    1:     def call_function_pointer(self, builder, funcptr, args, cconv=None):
+               return builder.call(funcptr, args, cconv=cconv)
+       
+    1:     def print_string(self, builder, text):
+               mod = builder.module
+               cstring = GENERIC_POINTER
+               fnty = llvmir.FunctionType(llvmir.IntType(32), [cstring])
+               puts = cgutils.get_or_insert_function(mod, fnty, "puts")
+               return builder.call(puts, [text])
+       
+    1:     def debug_print(self, builder, text):
+               mod = builder.module
+               cstr = self.insert_const_string(mod, str(text))
+               self.print_string(builder, cstr)
+       
+    1:     def printf(self, builder, format_string, *args):
+               mod = builder.module
+               if isinstance(format_string, str):
+                   cstr = self.insert_const_string(mod, format_string)
+               else:
+                   cstr = format_string
+               fnty = llvmir.FunctionType(llvmir.IntType(32), (GENERIC_POINTER,), var_arg=True)
+               fn = cgutils.get_or_insert_function(mod, fnty, "printf")
+               return builder.call(fn, (cstr,) + tuple(args))
+       
+    1:     def get_struct_type(self, struct):
+               """
+               Get the LLVM struct type for the given Structure class *struct*.
+               """
+    8:         fields = [self.get_value_type(v) for _, v in struct._fields]
+    2:         return llvmir.LiteralStructType(fields)
+       
+    1:     def get_dummy_value(self):
+  164:         return Constant(self.get_dummy_type(), None)
+       
+    1:     def get_dummy_type(self):
+  164:         return GENERIC_POINTER
+       
+    2:     def _compile_subroutine_no_cache(self, builder, impl, sig, locals={},
+    1:                                      flags=None):
+               """
+               Invoke the compiler to compile a function to be used inside a
+               nopython function, but without generating code to call that
+               function.
+       
+               Note this context's flags are not inherited.
+               """
+               # Compile
+    7:         from numba.core import compiler
+       
+   14:         with global_compiler_lock:
+    7:             codegen = self.codegen()
+    7:             library = codegen.create_library(impl.__name__)
+    7:             if flags is None:
+       
+    3:                 cstk = targetconfig.ConfigStack()
+    3:                 flags = compiler.Flags()
+    3:                 if cstk:
+    3:                     tls_flags = cstk.top()
+    3:                     if tls_flags.is_set("nrt") and tls_flags.nrt:
+    3:                         flags.nrt = True
+       
+    7:             flags.no_compile = True
+    7:             flags.no_cpython_wrapper = True
+    7:             flags.no_cfunc_wrapper = True
+       
+   14:             cres = compiler.compile_internal(self.typing_context, self,
+    7:                                              library,
+    7:                                              impl, sig.args,
+    7:                                              sig.return_type, flags,
+    7:                                              locals=locals)
+       
+                   # Allow inlining the function inside callers.
+    7:             self.active_code_library.add_linking_library(cres.library)
+    7:             return cres
+       
+    2:     def compile_subroutine(self, builder, impl, sig, locals={}, flags=None,
+    1:                            caching=True):
+               """
+               Compile the function *impl* for the given *sig* (in nopython mode).
+               Return an instance of CompileResult.
+       
+               If *caching* evaluates True, the function keeps the compiled function
+               for reuse in *.cached_internal_func*.
+               """
+   17:         cache_key = (impl.__code__, sig, type(self.error_model))
+   17:         if not caching:
+    4:             cached = None
+               else:
+   13:             if impl.__closure__:
+                       # XXX This obviously won't work if a cell's value is
+                       # unhashable.
+   15:                 cache_key += tuple(c.cell_contents for c in impl.__closure__)
+   13:             cached = self.cached_internal_func.get(cache_key)
+   17:         if cached is None:
+   14:             cres = self._compile_subroutine_no_cache(builder, impl, sig,
+    7:                                                      locals=locals,
+    7:                                                      flags=flags)
+    7:             self.cached_internal_func[cache_key] = cres
+       
+   17:         cres = self.cached_internal_func[cache_key]
+               # Allow inlining the function inside callers.
+   17:         self.active_code_library.add_linking_library(cres.library)
+   17:         return cres
+       
+    1:     def compile_internal(self, builder, impl, sig, args, locals={}):
+               """
+               Like compile_subroutine(), but also call the function with the given
+               *args*.
+               """
+   13:         cres = self.compile_subroutine(builder, impl, sig, locals)
+   13:         return self.call_internal(builder, cres.fndesc, sig, args)
+       
+    1:     def call_internal(self, builder, fndesc, sig, args):
+               """
+               Given the function descriptor of an internally compiled function,
+               emit a call to that function with the given arguments.
+               """
+   17:         status, res = self.call_internal_no_propagate(builder, fndesc, sig, args)
+   34:         with cgutils.if_unlikely(builder, status.is_error):
+   17:             self.call_conv.return_status_propagate(builder, status)
+       
+   17:         res = imputils.fix_returning_optional(self, builder, sig, status, res)
+   17:         return res
+       
+    1:     def call_internal_no_propagate(self, builder, fndesc, sig, args):
+               """Similar to `.call_internal()` but does not handle or propagate
+               the return status automatically.
+               """
+               # Add call to the generated function
+   17:         llvm_mod = builder.module
+   17:         fn = self.declare_function(llvm_mod, fndesc)
+   34:         status, res = self.call_conv.call_function(builder, fn, sig.return_type,
+   17:                                                    sig.args, args)
+   17:         return status, res
+       
+    1:     def call_unresolved(self, builder, name, sig, args):
+               """
+               Insert a function call to an unresolved symbol with the given *name*.
+       
+               Note: this is used for recursive call.
+       
+               In the mutual recursion case::
+       
+                   @njit
+                   def foo():
+                       ...  # calls bar()
+       
+                   @njit
+                   def bar():
+                       ... # calls foo()
+       
+                   foo()
+       
+               When foo() is called, the compilation of bar() is fully completed
+               (codegen'ed and loaded) before foo() is. Since MCJIT's eager compilation
+               doesn't allow loading modules with declare-only functions (which is
+               needed for foo() in bar()), the call_unresolved injects a global
+               variable that the "linker" can update even after the module is loaded by
+               MCJIT. The linker would allocate space for the global variable before
+               the bar() module is loaded. When later foo() module is defined, it will
+               update bar()'s reference to foo().
+       
+               The legacy lazy JIT and the new ORC JIT would allow a declare-only
+               function be used in a module as long as it is defined by the time of its
+               first use.
+               """
+               # Insert an unresolved reference to the function being called.
+               codegen = self.codegen()
+               fnty = self.call_conv.get_function_type(sig.return_type, sig.args)
+               fn = codegen.insert_unresolved_ref(builder, fnty, name)
+               # Normal call sequence
+               status, res = self.call_conv.call_function(builder, fn, sig.return_type,
+                                                          sig.args, args)
+               with cgutils.if_unlikely(builder, status.is_error):
+                   self.call_conv.return_status_propagate(builder, status)
+       
+               res = imputils.fix_returning_optional(self, builder, sig, status, res)
+               return res
+       
+    1:     def get_executable(self, func, fndesc, env):
+               raise NotImplementedError
+       
+    1:     def get_python_api(self, builder):
+   49:         return PythonAPI(self, builder)
+       
+    1:     def sentry_record_alignment(self, rectyp, attr):
+               """
+               Assumes offset starts from a properly aligned location
+               """
+               if self.strict_alignment:
+                   offset = rectyp.offset(attr)
+                   elemty = rectyp.typeof(attr)
+                   if isinstance(elemty, types.NestedArray):
+                       # For a NestedArray we need to consider the data type of
+                       # elements of the array for alignment, not the array structure
+                       # itself
+                       elemty = elemty.dtype
+                   align = self.get_abi_alignment(self.get_data_type(elemty))
+                   if offset % align:
+                       msg = "{rec}.{attr} of type {type} is not aligned".format(
+                           rec=rectyp, attr=attr, type=elemty)
+                       raise TypeError(msg)
+       
+    1:     def get_helper_class(self, typ, kind='value'):
+               """
+               Get a helper class for the given *typ*.
+               """
+               # XXX handle all types: complex, array, etc.
+               # XXX should it be a method on the model instead? this would allow a default kind...
+   31:         return cgutils.create_struct_proxy(typ, kind)
+       
+    1:     def _make_helper(self, builder, typ, value=None, ref=None, kind='value'):
+   31:         cls = self.get_helper_class(typ, kind)
+   31:         return cls(self, builder, value=value, ref=ref)
+       
+    1:     def make_helper(self, builder, typ, value=None, ref=None):
+               """
+               Get a helper object to access the *typ*'s members,
+               for the given value or reference.
+               """
+   31:         return self._make_helper(builder, typ, value, ref, kind='value')
+       
+    1:     def make_data_helper(self, builder, typ, ref=None):
+               """
+               As make_helper(), but considers the value as stored in memory,
+               rather than a live value.
+               """
+               return self._make_helper(builder, typ, ref=ref, kind='data')
+       
+    1:     def make_array(self, typ):
+   17:         from numba.np import arrayobj
+   17:         return arrayobj.make_array(typ)
+       
+    1:     def populate_array(self, arr, **kwargs):
+               """
+               Populate array structure.
+               """
+               from numba.np import arrayobj
+               return arrayobj.populate_array(arr, **kwargs)
+       
+    1:     def make_complex(self, builder, typ, value=None):
+               """
+               Get a helper object to access the given complex numbers' members.
+               """
+               assert isinstance(typ, types.Complex), typ
+               return self.make_helper(builder, typ, value)
+       
+    1:     def make_tuple(self, builder, typ, values):
+               """
+               Create a tuple of the given *typ* containing the *values*.
+               """
+   17:         tup = self.get_constant_undef(typ)
+   64:         for i, val in enumerate(values):
+   47:             tup = builder.insert_value(tup, val, i)
+   17:         return tup
+       
+    1:     def make_constant_array(self, builder, typ, ary):
+               """
+               Create an array structure reifying the given constant array.
+               A low-level contiguous array constant is created in the LLVM IR.
+               """
+               datatype = self.get_data_type(typ.dtype)
+               # don't freeze ary of non-contig or bigger than 1MB
+               size_limit = 10**6
+       
+               if (self.allow_dynamic_globals and
+                       (typ.layout not in 'FC' or ary.nbytes > size_limit)):
+                   # get pointer from the ary
+                   dataptr = ary.ctypes.data
+                   data = self.add_dynamic_addr(builder, dataptr, info=str(type(dataptr)))
+                   rt_addr = self.add_dynamic_addr(builder, id(ary), info=str(type(ary)))
+               else:
+                   # Handle data: reify the flattened array in "C" or "F" order as a
+                   # global array of bytes.
+                   flat = ary.flatten(order=typ.layout)
+                   # Note: we use `bytearray(flat.data)` instead of `bytearray(flat)` to
+                   #       workaround issue #1850 which is due to numpy issue #3147
+                   consts = cgutils.create_constant_array(llvmir.IntType(8), bytearray(flat.data))
+                   data = cgutils.global_constant(builder, ".const.array.data", consts)
+                   # Ensure correct data alignment (issue #1933)
+                   data.align = self.get_abi_alignment(datatype)
+                   # No reference to parent ndarray
+                   rt_addr = None
+       
+               # Handle shape
+               llintp = self.get_value_type(types.intp)
+               shapevals = [self.get_constant(types.intp, s) for s in ary.shape]
+               cshape = cgutils.create_constant_array(llintp, shapevals)
+       
+               # Handle strides
+               stridevals = [self.get_constant(types.intp, s) for s in ary.strides]
+               cstrides = cgutils.create_constant_array(llintp, stridevals)
+       
+               # Create array structure
+               cary = self.make_array(typ)(self, builder)
+       
+               intp_itemsize = self.get_constant(types.intp, ary.dtype.itemsize)
+               self.populate_array(cary,
+                                   data=builder.bitcast(data, cary.data.type),
+                                   shape=cshape,
+                                   strides=cstrides,
+                                   itemsize=intp_itemsize,
+                                   parent=rt_addr,
+                                   meminfo=None)
+       
+               return cary._getvalue()
+       
+    1:     def add_dynamic_addr(self, builder, intaddr, info):
+               """
+               Returns dynamic address as a void pointer `i8*`.
+       
+               Internally, a global variable is added to inform the lowerer about
+               the usage of dynamic addresses.  Caching will be disabled.
+               """
+               assert self.allow_dynamic_globals, "dyn globals disabled in this target"
+               assert isinstance(intaddr, int), 'dyn addr not of int type'
+               mod = builder.module
+               llvoidptr = self.get_value_type(types.voidptr)
+               addr = self.get_constant(types.uintp, intaddr).inttoptr(llvoidptr)
+               # Use a unique name by embedding the address value
+               symname = 'numba.dynamic.globals.{:x}'.format(intaddr)
+               gv = cgutils.add_global_variable(mod, llvoidptr, symname)
+               # Use linkonce linkage to allow merging with other GV of the same name.
+               # And, avoid optimization from assuming its value.
+               gv.linkage = 'linkonce'
+               gv.initializer = addr
+               return builder.load(gv)
+       
+    1:     def get_abi_sizeof(self, ty):
+               """
+               Get the ABI size of LLVM type *ty*.
+               """
+   62:         assert isinstance(ty, llvmir.Type), "Expected LLVM type"
+   62:         return ty.get_abi_size(self.target_data)
+       
+    1:     def get_abi_alignment(self, ty):
+               """
+               Get the ABI alignment of LLVM type *ty*.
+               """
+               assert isinstance(ty, llvmir.Type), "Expected LLVM type"
+               return ty.get_abi_alignment(self.target_data)
+       
+    1:     def get_preferred_array_alignment(context, ty):
+               """
+               Get preferred array alignment for Numba type *ty*.
+               """
+               # AVX prefers 32-byte alignment
+    6:         return 32
+       
+    1:     def post_lowering(self, mod, library):
+               """Run target specific post-lowering transformation here.
+               """
+       
+    1:     def create_module(self, name):
+               """Create a LLVM module
+       
+               The default implementation in BaseContext always raises a
+               ``NotImplementedError`` exception. Subclasses should implement
+               this method.
+               """
+               raise NotImplementedError
+       
+    2:     @property
+    2:     def active_code_library(self):
+               """Get the active code library
+               """
+  226:         return self._codelib_stack[-1]
+       
+    2:     @contextmanager
+    2:     def push_code_library(self, lib):
+               """Push the active code library for the context
+               """
+   24:         self._codelib_stack.append(lib)
+   24:         try:
+   24:             yield
+               finally:
+   24:             self._codelib_stack.pop()
+       
+    1:     def add_linking_libs(self, libs):
+               """Add iterable of linking libraries to the *active_code_library*.
+               """
+  202:         colib = self.active_code_library
+  226:         for lib in libs:
+   24:             colib.add_linking_library(lib)
+       
+    1:     def get_ufunc_info(self, ufunc_key):
+               """Get the ufunc implementation for a given ufunc object.
+       
+               The default implementation in BaseContext always raises a
+               ``NotImplementedError`` exception. Subclasses may raise ``KeyError``
+               to signal that the given ``ufunc_key`` is not available.
+       
+               Parameters
+               ----------
+               ufunc_key : NumPy ufunc
+       
+               Returns
+               -------
+               res : dict[str, callable]
+                   A mapping of a NumPy ufunc type signature to a lower-level
+                   implementation.
+               """
+               raise NotImplementedError(f"{self} does not support ufunc")
+       
+    2: class _wrap_impl(object):
+    1:     """
+           A wrapper object to call an implementation function with some predefined
+           (context, signature) arguments.
+           The wrapper also forwards attribute queries, which is important.
+           """
+       
+    1:     def __init__(self, imp, context, sig):
+  200:         self._callable = _wrap_missing_loc(imp)
+  200:         self._imp = self._callable()
+  200:         self._context = context
+  200:         self._sig = sig
+       
+    1:     def __call__(self, builder, args, loc=None):
+  200:         res = self._imp(self._context, builder, self._sig, args, loc=loc)
+  200:         self._context.add_linking_libs(getattr(self, 'libs', ()))
+  200:         return res
+       
+    1:     def __getattr__(self, item):
+  202:         return getattr(self._imp, item)
+       
+    1:     def __repr__(self):
+               return "<wrapped %s>" % repr(self._callable)
+       
+    1: def _has_loc(fn):
+           """Does function *fn* take ``loc`` argument?
+           """
+  200:     sig = utils.pysignature(fn)
+  200:     return 'loc' in sig.parameters
+       
+       
+    2: class _wrap_missing_loc(object):
+       
+    1:     def __init__(self, fn):
+  200:         self.func = fn # store this to help with debug
+       
+    1:     def __call__(self):
+               """Wrap function for missing ``loc`` keyword argument.
+               Otherwise, return the original *fn*.
+               """
+  200:         fn = self.func
+  200:         if not _has_loc(fn):
+  200:             def wrapper(*args, **kwargs):
+  200:                 kwargs.pop('loc')     # drop unused loc
+  200:                 return fn(*args, **kwargs)
+       
+                   # Copy the following attributes from the wrapped.
+                   # Following similar implementation as functools.wraps but
+                   # ignore attributes if not available (i.e fix py2.7)
+  200:             attrs = '__name__', 'libs'
+  600:             for attr in attrs:
+  400:                 try:
+  400:                     val = getattr(fn, attr)
+  178:                 except AttributeError:
+  178:                     pass
+                       else:
+  222:                     setattr(wrapper, attr, val)
+       
+  200:             return wrapper
+               else:
+                   return fn
+       
+    1:     def __repr__(self):
+               return "<wrapped %s>" % self.func
+       
+       
+    2: @utils.runonce
+    2: def _initialize_llvm_lock_event():
+           """Initial event triggers for LLVM lock
+           """
+    1:     def enter_fn():
+ 9163:         event.start_event("numba:llvm_lock")
+       
+    1:     def exit_fn():
+ 9163:         event.end_event("numba:llvm_lock")
+       
+    1:     ll.ffi.register_lock_callback(enter_fn, exit_fn)
+       
+       
+    1: _initialize_llvm_lock_event()

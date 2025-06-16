@@ -1,0 +1,59 @@
+    1: import numpy as np
+    1: from pymgipsim.InputGeneration.signal import Signal, Events
+    1: from pymgipsim.Utilities.Scenario import scenario, controller
+    1: from pymgipsim.Controllers import OpenLoop
+    1: import pymgipsim.VirtualPatient.Models.Physact.Activity2Heartrate as Heartrate
+    1: from pymgipsim.ModelSolver.singlescale import SingleScaleSolver
+       
+    1: def generate_heart_rate(scenario_instance: scenario, args):
+    1:     no_subjects = scenario_instance.patient.number_of_subjects
+           # magnitude = np.expand_dims(np.asarray(scenario_instance.patient.demographic_info.resting_heart_rate),1)
+           # start_time = np.zeros((no_subjects,1))
+    1:     sampling_time = 1.0
+    1:     time = np.arange(scenario_instance.settings.start_time,scenario_instance.settings.end_time,sampling_time)
+    1:     model = Heartrate.Model(sampling_time=sampling_time)
+       
+    2:     model.inputs.running_speed = Signal(time=time, sampling_time=sampling_time,
+    1:                                         start_time=np.zeros((no_subjects, 1)), magnitude=np.zeros((no_subjects, 1)))
+    2:     model.inputs.running_incline = Signal(time=time, sampling_time=sampling_time,
+    1:                                         start_time=np.zeros((no_subjects, 1)), magnitude=np.zeros((no_subjects, 1)))
+    2:     model.inputs.cycling_power = Signal(time=time, sampling_time=sampling_time,
+    1:                                         start_time=np.zeros((no_subjects, 1)), magnitude=np.zeros((no_subjects, 1)))
+    2:     model.inputs.standard_power = Signal(time=time, sampling_time=sampling_time,
+    1:                                         start_time=np.zeros((no_subjects, 1)), magnitude=np.zeros((no_subjects, 1)))
+    2:     model.inputs.METACSM = Signal(time=time, sampling_time=sampling_time,
+    1:                                         start_time=np.zeros((no_subjects, 1)), magnitude=np.zeros((no_subjects, 1)))
+       
+       
+    1:     if scenario_instance.inputs.cycling_power:
+    2:         model.inputs.cycling_power = Signal(time=time, sampling_time=sampling_time,
+    1:                                             duration=np.asarray(scenario_instance.inputs.cycling_power.duration),
+    1:                                             start_time=scenario_instance.inputs.cycling_power.start_time,
+    1:                                             magnitude=np.asarray(scenario_instance.inputs.cycling_power.magnitude)*np.asarray(scenario_instance.inputs.cycling_power.duration))
+    1:     if scenario_instance.inputs.running_speed and scenario_instance.inputs.running_incline:
+    2:         model.inputs.running_speed = Signal(time=time, sampling_time=sampling_time,
+    1:                                             duration=np.asarray(scenario_instance.inputs.running_speed.duration),
+    1:                                             start_time=scenario_instance.inputs.running_speed.start_time,
+    1:                                             magnitude=np.asarray(scenario_instance.inputs.running_speed.magnitude)*np.asarray(scenario_instance.inputs.running_speed.duration))
+    2:         model.inputs.running_incline = Signal(time=time, sampling_time=sampling_time,
+    1:                                               start_time=scenario_instance.inputs.running_incline.start_time,
+    1:                                               duration=np.asarray(scenario_instance.inputs.running_incline.duration),
+    1:                                               magnitude=np.asarray(scenario_instance.inputs.running_incline.magnitude)*np.asarray(scenario_instance.inputs.running_speed.duration))
+       
+    1:     model.parameters = Heartrate.Parameters(np.asarray(Heartrate.Parameters.generate(scenario_instance)))
+    1:     model.time.as_unix = time
+       
+    1:     scenario_controller = scenario_instance.controller
+    1:     scenario_instance.controller = controller(OpenLoop.controller.Controller.name,[])
+    1:     solver = SingleScaleSolver(scenario_instance, model)
+    1:     solver.set_solver("RK4")
+    1:     solver.model.preprocessing()
+    1:     solver.do_simulation(False)
+    1:     heart_rate = solver.model.rate_equations(solver.model.states.as_array, solver.model.time.as_unix, solver.model.parameters.as_array, solver.model.inputs.as_array)
+    1:     METACSM = solver.model.inputs.METACSM.sampled_signal
+           #
+           # plt.plot(heart_rate.T)
+           # plt.show()
+    1:     scenario_instance.controller = scenario_controller
+    2:     return Events(magnitude=heart_rate, start_time=time*np.ones((no_subjects,1))).as_dict(),\
+    1:         Events(magnitude=METACSM, start_time=time*np.ones((no_subjects,1))).as_dict()

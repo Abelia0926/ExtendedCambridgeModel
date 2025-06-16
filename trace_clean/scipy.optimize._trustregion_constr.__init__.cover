@@ -1,0 +1,6 @@
+    1: """This module contains the equality constrained SQP solver."""
+       
+       
+    1: from .minimize_trustregion_constr import _minimize_trustregion_constr
+       
+    1: __all__ = ['_minimize_trustregion_constr']

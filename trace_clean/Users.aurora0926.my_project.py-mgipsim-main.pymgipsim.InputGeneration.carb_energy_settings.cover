@@ -1,0 +1,39 @@
+    1: import argparse
+    1: import numpy as np
+    1: from pymgipsim.InputGeneration.signal import Events
+       
+    1: from pymgipsim.Utilities.units_conversions_constants import DEFAULT_RANDOM_SEED
+    1: from pymgipsim.InputGeneration.generate_carb_signal import generate_carb_ranges_multiscale
+    1: from pymgipsim.Utilities.Scenario import scenario
+       
+    1: np.random.seed(DEFAULT_RANDOM_SEED)
+       
+    1: def make_carb_settings(scenario_instance: scenario, args: argparse.Namespace):
+       
+    1:     match scenario_instance.settings.simulator_name:
+    1:         case 'SingleScaleSolver':
+    1:             scenario_instance.input_generation.breakfast_carb_range = args.breakfast_carb_range
+    1:             scenario_instance.input_generation.lunch_carb_range = args.lunch_carb_range
+    1:             scenario_instance.input_generation.dinner_carb_range = args.dinner_carb_range
+       
+    1:             scenario_instance.input_generation.am_snack_carb_range = args.am_snack_carb_range
+    1:             scenario_instance.input_generation.pm_snack_carb_range = args.pm_snack_carb_range
+       
+       
+               case 'MultiScaleSolver':
+                   meal_cho, snack_cho = generate_carb_ranges_multiscale(scenario_instance)
+       
+                   scenario_instance.input_generation.breakfast_carb_range = (np.array(meal_cho) / 3 ).tolist()
+                   scenario_instance.input_generation.lunch_carb_range = (np.array(meal_cho) / 3 ).tolist()
+                   scenario_instance.input_generation.dinner_carb_range = (np.array(meal_cho) / 3 ).tolist()
+       
+                   scenario_instance.input_generation.am_snack_carb_range = (np.array(snack_cho) / 2 ).tolist()
+                   scenario_instance.input_generation.pm_snack_carb_range = (np.array(snack_cho) / 2 ).tolist()
+       
+    1: def generate_carb_absorption(scenario_instance: scenario, args):
+           meal_times = np.asarray(scenario_instance.inputs.meal_carb.start_time)
+           meal_durations = np.asarray(scenario_instance.inputs.meal_carb.duration)
+           meal_magnitudes = 40*meal_durations
+           carb_absorption_time = Events(start_time= meal_times, duration=meal_durations,
+                                  magnitude=meal_magnitudes).as_dict()
+           return carb_absorption_time

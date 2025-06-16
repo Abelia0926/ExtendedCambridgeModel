@@ -1,0 +1,205 @@
+    1: """
+       Itanium CXX ABI Mangler
+       
+       Reference: https://itanium-cxx-abi.github.io/cxx-abi/abi.html
+       
+       The basics of the mangling scheme.
+       
+       We are hijacking the CXX mangling scheme for our use.  We map Python modules
+       into CXX namespace.  A `module1.submodule2.foo` is mapped to
+       `module1::submodule2::foo`.   For parameterized numba types, we treat them as
+       templated types; for example, `array(int64, 1d, C)` becomes an
+       `array<int64, 1, C>`.
+       
+       All mangled names are prefixed with "_Z".  It is followed by the name of the
+       entity.  A name contains one or more identifiers.  Each identifier is encoded
+       as "<num of char><name>".   If the name is namespaced and, therefore,
+       has multiple identifiers, the entire name is encoded as "N<name>E".
+       
+       For functions, arguments types follow.  There are condensed encodings for basic
+       built-in types; e.g. "i" for int, "f" for float.  For other types, the
+       previously mentioned name encoding should be used.
+       
+       For templated types, the template parameters are encoded immediately after the
+       name.  If it is namespaced, it should be within the 'N' 'E' marker.  Template
+       parameters are encoded in "I<params>E", where each parameter is encoded using
+       the mentioned name encoding scheme.  Template parameters can contain literal
+       values like the '1' in the array type shown earlier.  There is special encoding
+       scheme for them to avoid leading digits.
+       """
+       
+       
+    1: import re
+       
+    1: from numba.core import types
+       
+       
+       # According the scheme, valid characters for mangled names are [a-zA-Z0-9_].
+       # We borrow the '_' as the escape character to encode invalid char into
+       # '_xx' where 'xx' is the hex codepoint.
+    1: _re_invalid_char = re.compile(r'[^a-z0-9_]', re.I)
+       
+    1: PREFIX = "_Z"
+       
+       # Numba types to mangled type code. These correspond with the codes listed in
+       # https://itanium-cxx-abi.github.io/cxx-abi/abi.html#mangling-builtin
+    1: N2CODE = {
+    1:     types.void: 'v',
+    1:     types.boolean: 'b',
+    1:     types.uint8: 'h',
+    1:     types.int8: 'a',
+    1:     types.uint16: 't',
+    1:     types.int16: 's',
+    1:     types.uint32: 'j',
+    1:     types.int32: 'i',
+    1:     types.uint64: 'y',
+    1:     types.int64: 'x',
+    1:     types.float16: 'Dh',
+    1:     types.float32: 'f',
+    1:     types.float64: 'd'
+       }
+       
+       
+    1: def _escape_string(text):
+           """Escape the given string so that it only contains ASCII characters
+           of [a-zA-Z0-9_$].
+       
+           The dollar symbol ($) and other invalid characters are escaped into
+           the string sequence of "$xx" where "xx" is the hex codepoint of the char.
+       
+           Multibyte characters are encoded into utf8 and converted into the above
+           hex format.
+           """
+       
+  540:     def repl(m):
+ 1230:         return ''.join(('_%02x' % ch)
+  492:                        for ch in m.group(0).encode('utf8'))
+  540:     ret = re.sub(_re_invalid_char, repl, text)
+           # Return str if we got a unicode (for py2)
+  540:     if not isinstance(ret, str):
+               return ret.encode('ascii')
+  540:     return ret
+       
+       
+    1: def _fix_lead_digit(text):
+           """
+           Fix text with leading digit
+           """
+  540:     if text and text[0].isdigit():
+    2:         return '_' + text
+           else:
+  538:         return text
+       
+       
+    1: def _len_encoded(string):
+           """
+           Prefix string with digit indicating the length.
+           Add underscore if string is prefixed with digits.
+           """
+  540:     string = _fix_lead_digit(string)
+  540:     return '%u%s' % (len(string), string)
+       
+       
+    1: def mangle_abi_tag(abi_tag: str) -> str:
+   96:     return "B" + _len_encoded(_escape_string(abi_tag))
+       
+       
+    1: def mangle_identifier(ident, template_params='', *, abi_tags=(), uid=None):
+           """
+           Mangle the identifier with optional template parameters and abi_tags.
+       
+           Note:
+       
+           This treats '.' as '::' in C++.
+           """
+  190:     if uid is not None:
+               # Add uid to abi-tags
+   48:         abi_tags = (f"v{uid}", *abi_tags)
+  824:     parts = [_len_encoded(_escape_string(x)) for x in ident.split('.')]
+  190:     enc_abi_tags = list(map(mangle_abi_tag, abi_tags))
+  190:     extras = template_params + ''.join(enc_abi_tags)
+  190:     if len(parts) > 1:
+   54:         return 'N%s%sE' % (''.join(parts), extras)
+           else:
+  136:         return '%s%s' % (parts[0], extras)
+       
+       
+    1: def mangle_type_or_value(typ):
+           """
+           Mangle type parameter and arbitrary value.
+           """
+           # Handle numba types
+  228:     if isinstance(typ, types.Type):
+  136:         if typ in N2CODE:
+   82:             return N2CODE[typ]
+               else:
+   54:             return mangle_templated_ident(*typ.mangling_args)
+           # Handle integer literal
+   92:     elif isinstance(typ, int):
+   26:         return 'Li%dE' % typ
+           # Handle str as identifier
+   66:     elif isinstance(typ, str):
+   66:         return mangle_identifier(typ)
+           # Otherwise
+           else:
+               enc = _escape_string(str(typ))
+               return _len_encoded(enc)
+       
+       
+       # Alias
+    1: mangle_type = mangle_type_or_value
+    1: mangle_value = mangle_type_or_value
+       
+       
+    1: def mangle_templated_ident(identifier, parameters):
+           """
+           Mangle templated identifier.
+           """
+   82:     template_params = ('I%sE' % ''.join(map(mangle_type_or_value, parameters))
+   82:                        if parameters else '')
+   54:     return mangle_identifier(identifier, template_params)
+       
+       
+    1: def mangle_args(argtys):
+           """
+           Mangle sequence of Numba type objects and arbitrary values.
+           """
+  206:     return ''.join([mangle_type_or_value(t) for t in argtys])
+       
+       
+    1: def mangle(ident, argtys, *, abi_tags=(), uid=None):
+           """
+           Mangle identifier with Numba type objects and abi-tags.
+           """
+   96:     return ''.join([PREFIX,
+   48:                     mangle_identifier(ident, abi_tags=abi_tags, uid=uid),
+   48:                     mangle_args(argtys)])
+       
+       
+    1: def prepend_namespace(mangled, ns):
+           """
+           Prepend namespace to mangled name.
+           """
+   22:     if not mangled.startswith(PREFIX):
+               raise ValueError('input is not a mangled name')
+   22:     elif mangled.startswith(PREFIX + 'N'):
+               # nested
+   22:         remaining = mangled[3:]
+   22:         ret = PREFIX + 'N' + mangle_identifier(ns) + remaining
+           else:
+               # non-nested
+               remaining = mangled[2:]
+               head, tail = _split_mangled_ident(remaining)
+               ret = PREFIX + 'N' + mangle_identifier(ns) + head + 'E' + tail
+   22:     return ret
+       
+       
+    1: def _split_mangled_ident(mangled):
+           """
+           Returns `(head, tail)` where `head` is the `<len> + <name>` encoded
+           identifier and `tail` is the remaining.
+           """
+           ct = int(mangled)
+           ctlen = len(str(ct))
+           at = ctlen + ct
+           return mangled[:at], mangled[at:]
